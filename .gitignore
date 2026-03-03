@@ -1,0 +1,76 @@
+# ================================
+
+# Python / FastAPI Backend
+
+# ================================
+
+# Python cache
+
+**pycache**/
+*.py[cod]
+*$py.class
+
+# Compiled Python files
+
+*.so
+
+# Virtual environments
+
+.venv/
+venv/
+env/
+ENV/
+
+# Python build files
+
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Logs
+
+logs/
+*.log
+
+# Environment variables
+
+.env
+
+
+# Database files
+
+*.db
+*.sqlite3
+
+# Alembic cache
+
+alembic/versions/*.pyc
+
+# Testing / coverage
+
+.pytest_cache/
+.mypy_cache/
+.cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE
+
+.vscode/
+.idea/
+
+# OS files
+
+.DS_Store
+Thumbs.db
+
+# Temporary files
+
+*.tmp
+*.temp
+list_db_info.py
+check_users.py
+verify_dynamic_campaigns.py

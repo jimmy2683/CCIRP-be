@@ -30,9 +30,11 @@ app.include_router(communication_router)
 app.include_router(reminders_router)
 app.include_router(users_router)
 
+from src.config import settings
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[settings.FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers

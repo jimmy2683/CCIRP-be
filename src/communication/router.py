@@ -134,6 +134,19 @@ async def list_campaigns(current_user: dict = Depends(get_current_active_user)):
     return campaigns
 
 
+@router.get("/stats", response_model=dict)
+async def get_campaign_stats(current_user: dict = Depends(get_current_active_user)):
+    db = get_database()
+    pipeline = [
+        {"$match": {"created_by": current_user["id"]}},
+        {"$group": {"_id": "$status", "count": {"$sum": 1}}}
+    ]
+    results = await db["campaigns"].aggregate(pipeline).to_list(length=100)
+    stats = {r["_id"]: r["count"] for r in results}
+    stats["total"] = sum(stats.values())
+    return stats
+
+
 @router.get("/{campaign_id}", response_model=CampaignResponse)
 async def get_campaign(campaign_id: str, current_user: dict = Depends(get_current_active_user)):
     db = get_database()

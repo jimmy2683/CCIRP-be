@@ -25,6 +25,12 @@ async def register_user(user_in: UserCreate):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this email already exists"
         )
+    
+    if len(user_in.password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 6 characters"
+        )
         
     # Hash password and save
     hashed_password = get_password_hash(user_in.password)

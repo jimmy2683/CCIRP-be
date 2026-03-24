@@ -31,9 +31,15 @@
 - **Real Email Dispatch & Test Engine**: `POST /templates/{id}/test-send` logic resolving specific users from the `UserDB`, hydrating `{{name}}` and `{{email}}` dynamically, and dispatching genuine asynchronous emails via SMTP utilizing the `fastapi-mail` integration.
 
 ### 5. Campaign Management API
-- **Workflow Persistence**: Endpoint architecture (`src/communication/`) mapped to save draft and operational communication broadcasts.
-- **Relational Integrity**: Campaigns dynamically link User identities (`created_by`) and target Assets (`template_id`).
-- **List Aggregation**: Designed to securely host `recipients` criteria and `scheduled_at` dispatch timing for future jobs.
+- **Workflow Persistence**: Endpoint architecture mapped to save draft and operational communication broadcasts.
+- **Relational Integrity**: Campaigns dynamically link User identities and target Assets.
+- **List Aggregation**: Designed to securely host `recipients` criteria and `scheduled_at` dispatch timing.
+- **Campaign Insights**: Implemented a new summary endpoint for high-level campaign analytics.
+
+### 6. Module Scaffolding & Infrastructure
+- **Module Expansion**: Scaffolded asynchronous `NotificationService`, `ReminderService`, and `AIService` architectures.
+- **Dynamic environment**: Added support for configuring the Frontend URL via `.env` for CORS flexibility.
+- **Robustness**: Integrated missing password verification checks during profile updates.
 
 ## System Architecture
 
@@ -44,7 +50,9 @@
 - `src/auth/`: Cryptography, Token issue, and route security.
 - `src/users/`: Models supporting accounts and recipient attributes.
 - `src/communication/`: REST operations for Campaign tracking, and asynchronous outgoing services like `EmailService`.
+- `src/notifications/`, `src/reminders/`, `src/ai/`: Isolated modules for specialized business logic.
 
 ## Immediate Next Steps
+- Implement logic for the scaffolded Notification and Reminder services.
+- Develop AI-based scheduling and prioritization logic.
 - Integrate CRON/Task Queues for `scheduled_at` asynchronous campaign dispatching.
-- Implement the AI reminder scheduling microservice.

@@ -21,6 +21,7 @@ The backend is responsible for:
 * **Python 3.13** – Latest Python runtime
 * **MongoDB** – Primary NoSQL database for flexible data storage
 * **Motor** – High-performance asynchronous MongoDB driver
+* **ObjectId Serialization**: Integrated robust type checking and string casting for BSON ObjectIDs.
 * **Pydantic 2** – Modern data validation and serialization
 * **FastAPI-Mail** – Asynchronous email dispatch engine
 * **JWT** – Secure authentication tokens
@@ -64,6 +65,7 @@ backend
 ### Authentication
 
 * Secure login system
+* **OAuth2 Password Bearer Flow**: Standardized secure authentication routing.
 * JWT-based authentication
 * **Extended Session Security**: Access tokens valid for **24 hours**.
 * Role-based access control
@@ -81,7 +83,6 @@ backend
 * Time-based notifications
 
 ### Notifications
-
 * **Real-time Dispatch**: Integrated `EmailService` using `FastMail` for asynchronous delivery.
 * **SMTP Integration**: Pre-configured support for modern mail providers (Gmail, SendGrid, etc.).
 * **Merge Field Resolution**: Dynamic injection of recipient data and system variables (e.g., `{{timestamp}}`) into rendered HTML.
@@ -89,14 +90,18 @@ backend
 * Multi-channel communication support
 
 ### Template Engine
-
+* **Visual Builder Persistence**: Integrated a `design_json` field capable of natively persisting complex, nested Block/Component hierarchies.
+* **Real Email Dispatch & Test Engine**: Logic resolving specific users, hydrating `{{name}}` and `{{email}}` dynamically.
 * **Dynamic Rendering**: Server-side template rendering with sample data support.
 * **CRUD Operations**: Secure endpoints for managing design blocks and layouts.
 * **Version Control**: Automatic version tracking for all template changes.
-* **Multi-channel support**: Logic for adapting templates to Email, SMS, and WhatsApp.
+
+### Campaign Management (NEW)
+* **Workflow Persistence**: Endpoint architecture mapped to save draft and operational communication broadcasts.
+* **Relational Integrity**: Campaigns dynamically link User identities and target Assets.
+* **List Aggregation**: Designed to securely host `recipients` criteria and `scheduled_at` dispatch timing.
 
 ### AI Integration
-
 * AI-powered reminder suggestions
 * Task prioritization logic
 * Future predictive scheduling support

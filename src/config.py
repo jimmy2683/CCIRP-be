@@ -1,6 +1,10 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    # CORS Settings
+    ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]
+
+    # MongoDB Settings
     MONGODB_URL: str = "mongodb://localhost:27017"
     DATABASE_NAME: str = "ccirp_db"
     

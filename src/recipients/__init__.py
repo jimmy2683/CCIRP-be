@@ -1,0 +1,3 @@
+"""
+Recipient module initialization.
+"""

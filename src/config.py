@@ -22,10 +22,10 @@ class Settings(BaseSettings):
     MAIL_FROM: str = "noreply@example.com"
     SMTP_TLS: bool = True
     SMTP_SSL: bool = False
-    
-<<<<<<< HEAD
+
+    # Frontend URL
     FRONTEND_URL: str = "http://localhost:3000"
-=======
+    
     # Celery Settings
     CELERY_BROKER_URL: str = "redis://localhost:6373/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6373/1"
@@ -35,7 +35,6 @@ class Settings(BaseSettings):
     
     # Redis Settings
     REDIS_URL: str = "redis://localhost:6373/0"
->>>>>>> 343a8f4 (Feat: Added the celery services for background queues)
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

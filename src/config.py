@@ -25,6 +25,13 @@ class Settings(BaseSettings):
 
     # Frontend URL
     FRONTEND_URL: str = "http://localhost:3000"
+
+    # Tracking settings
+    TRACKING_BASE_URL: str = "http://localhost:8000"
+    TRACKING_SIGNING_KEY: str = "ccirp-tracking-signing-key-change-in-prod"
+    TRACKING_TOKEN_TTL_SECONDS: int = 60 * 60 * 24 * 30
+
+
     
     # Celery Settings
     CELERY_BROKER_URL: str = "redis://localhost:6373/1"

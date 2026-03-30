@@ -3,6 +3,8 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from bson import ObjectId
 
+from src.config import settings
+from src.communication.tracking_utils import inject_tracking
 from src.communication.schemas import CampaignCreate, CampaignResponse
 from src.communication.models import CampaignDB
 from src.communication.email_service import EmailService
@@ -35,7 +37,7 @@ def render_template(body_html: str, merge_data: dict, recipient_email: str, reci
     return rendered
 
 
-async def dispatch_campaign_emails(campaign_id: str, template: dict, recipients: List[str], subject: str, merge_data: dict):
+async def dispatch_campaign_emails(campaign_id: str, owner_user_id: str, template: dict, recipients: List[str], subject: str, merge_data: dict):
     """Background task to send emails to all recipients and update campaign status."""
     db = get_database()
     body_html = template.get("body_html", "")
@@ -52,7 +54,8 @@ async def dispatch_campaign_emails(campaign_id: str, template: dict, recipients:
     for email in recipients:
         user_data = recipient_data_map.get(email, {})
         rendered_body = render_template(body_html, merge_data, email, user_data)
-        success, msg = await EmailService.send_email([email], subject, rendered_body)
+        tracked_body = inject_tracking(rendered_body, campaign_id, email, owner_user_id, settings.TRACKING_BASE_URL)
+        success, msg = await EmailService.send_email([email], subject, tracked_body)
         if not success:
             print(f"Failed to send to {email}: {msg}")
             failed.append(email)
@@ -106,6 +109,7 @@ async def create_campaign(
             background_tasks.add_task(
                 dispatch_campaign_emails,
                 campaign_id,
+                current_user["id"],
                 template,
                 campaign_in.recipients,
                 subject,

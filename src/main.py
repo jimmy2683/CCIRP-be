@@ -15,6 +15,7 @@ async def lifespan(app: FastAPI):
 from src.templates.router import router as templates_router
 from src.auth.router import router as auth_router
 from src.communication.router import router as communication_router
+from src.communication.tracking_router import router as tracking_router
 from src.reminders.router import router as reminders_router
 from src.users.router import router as users_router
 from src.recipients.router import router as recipients_router
@@ -29,11 +30,10 @@ app = FastAPI(
 app.include_router(templates_router)
 app.include_router(auth_router)
 app.include_router(communication_router)
+app.include_router(tracking_router)
 app.include_router(reminders_router)
 app.include_router(users_router)
 app.include_router(recipients_router)
-
-from src.config import settings
 
 app.add_middleware(
     CORSMiddleware,

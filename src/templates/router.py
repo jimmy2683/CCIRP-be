@@ -58,7 +58,7 @@ async def preview_template(request: TemplatePreviewRequest, current_user: dict =
 
 @router.post("/{id}/test-send")
 async def test_send_template(id: str, request: TestSendRequest, current_user: dict = Depends(get_current_active_user)):
-    result = await TemplateService.test_send(id, request.email, request.sample_data)
+    result = await TemplateService.test_send(id, current_user["id"], request.email, request.sample_data)
     if not result.get("success"):
         raise HTTPException(status_code=404, detail=result.get("message"))
     return result

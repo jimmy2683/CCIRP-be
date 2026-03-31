@@ -107,7 +107,7 @@ def inject_tracking(
     rewritten = _rewrite_anchor_links(html, click_base)
     pixel_tag = (
         f'<img src="{open_url}" alt="" width="1" height="1" '
-        f'style="display:none;" />'
+        f'style="width:1px;height:1px;opacity:0;border:0;" loading="eager" decoding="sync" />'
     )
 
     body_close = re.search(r"</body>", rewritten, flags=re.IGNORECASE)

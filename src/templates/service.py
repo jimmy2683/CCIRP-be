@@ -125,8 +125,8 @@ class TemplateService:
         return result.deleted_count > 0
 
     @staticmethod
-    async def render_template(template_id: str, sample_data: dict) -> Optional[str]:
-        template = await TemplateService.get_template_by_id(template_id)
+    async def render_template(template_id: str, current_user_id: str, sample_data: dict) -> Optional[str]:
+        template = await TemplateService.get_template_by_id(template_id, current_user_id)
         if not template:
             return None
         
@@ -145,10 +145,10 @@ class TemplateService:
         return body
 
     @staticmethod
-    async def test_send(template_id: str, email: str, sample_data: Optional[dict] = None) -> dict:
+    async def test_send(template_id: str, current_user_id: str, email: str, sample_data: Optional[dict] = None) -> dict:
         db = get_database()
         
-        template = await TemplateService.get_template_by_id(template_id)
+        template = await TemplateService.get_template_by_id(template_id, current_user_id)
         if not template:
             return {"success": False, "message": "Template not found"}
 
@@ -165,7 +165,7 @@ class TemplateService:
                 "location": "Main Campus",
             }
 
-        rendered_html = await TemplateService.render_template(template_id, data)
+        rendered_html = await TemplateService.render_template(template_id, current_user_id, data)
         
         success, message = await EmailService.send_email(
             to_emails=[email],

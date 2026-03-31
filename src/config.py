@@ -27,9 +27,9 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
 
     # Tracking settings
-    TRACKING_BASE_URL: str = "http://localhost:8000"
+    TRACKING_BASE_URL: str = "http://localhost:8000" # Same as backend URL
     TRACKING_SIGNING_KEY: str = "ccirp-tracking-signing-key-change-in-prod"
-    TRACKING_TOKEN_TTL_SECONDS: int = 60 * 60 * 24 * 30
+    TRACKING_TOKEN_TTL_SECONDS: int = 2592000 # 30 days
 
 
     

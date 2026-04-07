@@ -12,6 +12,53 @@ import io
 
 async def import_csv(user_id: str, file: UploadFile) -> dict:
     db = get_database()
+    content = await file.read()
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be valid UTF-8 encoded CSV")
+    
+    reader = csv.DictReader(io.StringIO(text))
+    
+    success_count = 0
+    skipped_count = 0
+    errors = []
+    
+    for row in reader:
+        cleaned_row = {k.strip().lower() if k else '': v for k, v in row.items()}
+        email = cleaned_row.get("email", "").strip()
+        if not email:
+            continue
+            
+        existing = await db.recipients.find_one({"user_id": user_id, "email": email})
+        if existing:
+            skipped_count += 1
+            continue
+            
+        tags = [t.strip() for t in cleaned_row.get("tags", "").split(",") if t.strip()]
+        
+        recipient_dict = {
+            "user_id": user_id,
+            "email": email,
+            "first_name": cleaned_row.get("first_name", email.split('@')[0]).strip(),
+            "last_name": cleaned_row.get("last_name", "").strip() or None,
+            "phone": cleaned_row.get("phone", "").strip() or None,
+            "tags": tags,
+            "attributes": {},
+            "consent_flags": {"email": True, "sms": False, "whatsapp": False},
+        }
+        
+        new_recipient = RecipientDB(**recipient_dict)
+        try:
+            await db.recipients.insert_one(new_recipient.model_dump(by_alias=True, exclude={"id"}))
+            success_count += 1
+        except Exception as e:
+            errors.append(f"Error importing {email}: {str(e)}")
+            
+    return {"success": success_count, "skipped": skipped_count, "errors": errors}
+
+async def create_recipient(user_id: str, recipient_data: RecipientCreate) -> RecipientDB:
+    db = get_database()
     collection = db.recipients
 
     existing = await collection.find_one({"user_id": user_id, "email": recipient_data.email})

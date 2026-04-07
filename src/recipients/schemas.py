@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, EmailStr
 from datetime import datetime
+from src.models import PyObjectId
 
 class ConsentFlagsSchema(BaseModel):
     email: bool = True
@@ -27,7 +28,7 @@ class RecipientUpdate(BaseModel):
     status: Optional[str] = None
 
 class RecipientResponse(BaseModel):
-    id: str
+    id: PyObjectId
     user_id: str
     email: EmailStr
     phone: Optional[str] = None

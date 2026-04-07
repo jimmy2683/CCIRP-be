@@ -5,9 +5,12 @@ from src.recipients.models import RecipientDB
 from src.recipients.schemas import RecipientCreate, RecipientUpdate
 from pymongo.errors import DuplicateKeyError
 from datetime import datetime, timezone
+from fastapi import UploadFile
 import math
+import csv
+import io
 
-async def create_recipient(user_id: str, recipient_data: RecipientCreate) -> RecipientDB:
+async def import_csv(user_id: str, file: UploadFile) -> dict:
     db = get_database()
     collection = db.recipients
 

@@ -19,6 +19,7 @@ from src.communication.tracking_router import router as tracking_router
 from src.reminders.router import router as reminders_router
 from src.users.router import router as users_router
 from src.recipients.router import router as recipients_router
+from src.analytics.router import router as analytics_router
 
 app = FastAPI(
     title="CCIRP API",
@@ -34,6 +35,7 @@ app.include_router(tracking_router)
 app.include_router(reminders_router)
 app.include_router(users_router)
 app.include_router(recipients_router)
+app.include_router(analytics_router)
 
 app.add_middleware(
     CORSMiddleware,

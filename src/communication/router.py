@@ -1,5 +1,5 @@
 import re
-from typing import List
+from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from bson import ObjectId
 
@@ -169,3 +169,97 @@ async def get_campaign(campaign_id: str, current_user: dict = Depends(get_curren
         
     campaign["id"] = str(campaign["_id"])
     return campaign
+
+
+@router.get("/{campaign_id}/analytics", response_model=Dict[str, Any])
+async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict = Depends(get_current_active_user)):
+    """Forward to the analytics service logic."""
+    # To avoid circular imports or duplication, we can either move the logic to a service 
+    # or just implement it here. Given the current structure, we'll implement it here 
+    # to match the implementation in analytics/router.py
+    db = get_database()
+    
+    # Verify campaign exists and belongs to user
+    try:
+        camp_query = {"_id": ObjectId(campaign_id)}
+    except:
+        camp_query = {"_id": campaign_id}
+        
+    campaign = await db["campaigns"].find_one(camp_query)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign["created_by"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    # Aggregate Metrics
+    pipeline = [
+        {"$match": {"campaign_id": campaign_id}},
+        {"$group": {
+            "_id": None,
+            "total_opens": {"$sum": "$open_count"},
+            "total_clicks": {"$sum": "$click_count"},
+            "unique_opens": {"$sum": "$unique_open_count"},
+            "unique_clicks": {"$sum": "$unique_click_count"}
+        }}
+    ]
+    stats_result = await db["campaign_recipient_stats"].aggregate(pipeline).to_list(length=1)
+    stats = stats_result[0] if stats_result else {
+        "total_opens": 0, "total_clicks": 0, "unique_opens": 0, "unique_clicks": 0
+    }
+    
+    sent_count = len(campaign.get("recipients", []))
+    
+    metrics = {
+        "total_sent": sent_count,
+        "delivered": sent_count, # Assume delivered for now
+        "opened": stats["unique_opens"],
+        "clicked": stats["unique_clicks"],
+        "bounced": 0,
+        "delivery_rate": 100.0 if sent_count > 0 else 0,
+        "open_rate": round((stats["unique_opens"] / sent_count * 100), 1) if sent_count > 0 else 0,
+        "click_rate": round((stats["unique_clicks"] / sent_count * 100), 1) if sent_count > 0 else 0,
+        "bounce_rate": 0.0
+    }
+    
+    # Accurate Timeline (Hours since creation)
+    created_at = campaign.get("created_at", datetime.now(timezone.utc))
+    timeline_pipeline = [
+        {"$match": {"campaign_id": campaign_id}},
+        {"$project": {
+            "hours_since": {"$floor": {"$divide": [{"$subtract": ["$ts", created_at]}, 3600000]}},
+            "event_type": 1
+        }},
+        {"$match": {"hours_since": {"$gte": 0, "$lt": 72}}},
+        {"$group": {
+            "_id": "$hours_since",
+            "opens": {"$sum": {"$cond": [{"$eq": ["$event_type", "open"]}, 1, 0]}},
+            "clicks": {"$sum": {"$cond": [{"$eq": ["$event_type", "click"]}, 1, 0]}},
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    timeline_results = await db["email_events"].aggregate(timeline_pipeline).to_list(length=72)
+    
+    # Recipient Activity
+    recipients_cursor = db["campaign_recipient_stats"].find({"campaign_id": campaign_id}).limit(100)
+    recipients_list = await recipients_cursor.to_list(length=100)
+    
+    recipient_emails = [r["recipient_email"] for r in recipients_list]
+    users_cursor = db["users"].find({"email": {"$in": recipient_emails}})
+    users_map = {u["email"]: u.get("full_name", u["email"]) for u in await users_cursor.to_list(length=100)}
+    
+    recipient_activity = []
+    for r in recipients_list:
+        email = r["recipient_email"]
+        recipient_activity.append({
+            "email": email,
+            "name": users_map.get(email, email.split("@")[0]),
+            "status": "Clicked" if r.get("click_count", 0) > 0 else ("Opened" if r.get("open_count", 0) > 0 else "Delivered"),
+            "opened_at": r.get("last_open_at").isoformat() if r.get("last_open_at") else None,
+            "clicked_at": r.get("last_click_at").isoformat() if r.get("last_click_at") else None,
+        })
+        
+    return {
+        "metrics": metrics,
+        "timeline": [{"time": f"{int(r['_id'])}h", "opens": r["opens"], "clicks": r["clicks"]} for r in timeline_results],
+        "recipients": recipient_activity
+    }

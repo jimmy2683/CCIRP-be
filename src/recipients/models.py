@@ -14,6 +14,7 @@ class EngagementStats(BaseModel):
     unique_open_campaigns: List[str] = Field(default_factory=list)
     unique_click_campaigns: List[str] = Field(default_factory=list)
     clicked_domains: List[str] = Field(default_factory=list)
+    tag_scores: Dict[str, int] = Field(default_factory=dict)
     topic_scores: Dict[str, int] = Field(default_factory=dict)
     last_open_at: Optional[datetime] = None
     last_click_at: Optional[datetime] = None

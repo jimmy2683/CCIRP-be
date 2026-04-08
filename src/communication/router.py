@@ -1,9 +1,11 @@
 import re
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from bson import ObjectId
 
 from src.config import settings
+from src.communication.tracking_service import ensure_recipient_stats, record_delivery_event
 from src.communication.tracking_utils import inject_tracking
 from src.communication.schemas import CampaignCreate, CampaignResponse
 from src.communication.models import CampaignDB
@@ -12,6 +14,21 @@ from src.auth.dependencies import get_current_active_user
 from src.database import get_database
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
+
+
+def normalize_campaign_tags(tags: List[str]) -> List[str]:
+    normalized_tags = []
+    seen = set()
+    for tag in tags:
+        clean_tag = str(tag).strip()
+        if not clean_tag:
+            continue
+        key = clean_tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_tags.append(clean_tag)
+    return normalized_tags
 
 
 def render_template(body_html: str, merge_data: dict, recipient_email: str, recipient_data: dict) -> str:
@@ -52,10 +69,24 @@ async def dispatch_campaign_emails(campaign_id: str, owner_user_id: str, templat
 
     failed = []
     for email in recipients:
+        await ensure_recipient_stats(
+            db=db,
+            campaign_id=campaign_id,
+            recipient_email=email,
+            owner_user_id=owner_user_id,
+        )
         user_data = recipient_data_map.get(email, {})
         rendered_body = render_template(body_html, merge_data, email, user_data)
         tracked_body = inject_tracking(rendered_body, campaign_id, email, owner_user_id, settings.TRACKING_BASE_URL)
         success, msg = await EmailService.send_email([email], subject, tracked_body)
+        await record_delivery_event(
+            db=db,
+            campaign_id=campaign_id,
+            recipient_email=email,
+            owner_user_id=owner_user_id,
+            delivered=success,
+            error_message=None if success else msg,
+        )
         if not success:
             print(f"Failed to send to {email}: {msg}")
             failed.append(email)
@@ -92,9 +123,12 @@ async def create_campaign(
         
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-            
+
+        campaign_payload = campaign_in.model_dump()
+        campaign_payload["tags"] = normalize_campaign_tags(campaign_payload.get("tags", []))
+
         campaign_db = CampaignDB(
-            **campaign_in.model_dump(),
+            **campaign_payload,
             created_by=current_user["id"]
         )
         
@@ -133,6 +167,7 @@ async def list_campaigns(current_user: dict = Depends(get_current_active_user)):
     campaigns = await cursor.to_list(length=100)
     
     for camp in campaigns:
+        camp.setdefault("tags", [])
         camp["id"] = str(camp["_id"])
         
     return campaigns
@@ -166,7 +201,8 @@ async def get_campaign(campaign_id: str, current_user: dict = Depends(get_curren
         
     if campaign["created_by"] != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized to view this campaign")
-        
+
+    campaign.setdefault("tags", [])
     campaign["id"] = str(campaign["_id"])
     return campaign
 
@@ -206,19 +242,28 @@ async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict =
     stats = stats_result[0] if stats_result else {
         "total_opens": 0, "total_clicks": 0, "unique_opens": 0, "unique_clicks": 0
     }
+
+    delivered_count = await db["campaign_recipient_stats"].count_documents({
+        "campaign_id": campaign_id,
+        "delivery_status": "delivered"
+    })
+    failed_count = await db["campaign_recipient_stats"].count_documents({
+        "campaign_id": campaign_id,
+        "delivery_status": "failed"
+    })
     
     sent_count = len(campaign.get("recipients", []))
     
     metrics = {
         "total_sent": sent_count,
-        "delivered": sent_count, # Assume delivered for now
+        "delivered": delivered_count,
         "opened": stats["unique_opens"],
         "clicked": stats["unique_clicks"],
-        "bounced": 0,
-        "delivery_rate": 100.0 if sent_count > 0 else 0,
+        "bounced": failed_count,
+        "delivery_rate": round((delivered_count / sent_count * 100), 1) if sent_count > 0 else 0,
         "open_rate": round((stats["unique_opens"] / sent_count * 100), 1) if sent_count > 0 else 0,
         "click_rate": round((stats["unique_clicks"] / sent_count * 100), 1) if sent_count > 0 else 0,
-        "bounce_rate": 0.0
+        "bounce_rate": round((failed_count / sent_count * 100), 1) if sent_count > 0 else 0
     }
     
     # Accurate Timeline (Hours since creation)
@@ -244,16 +289,35 @@ async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict =
     recipients_list = await recipients_cursor.to_list(length=100)
     
     recipient_emails = [r["recipient_email"] for r in recipients_list]
+    recipients_cursor = db["recipients"].find(
+        {"user_id": current_user["id"], "email": {"$in": recipient_emails}}
+    )
+    recipients_map = {}
+    for recipient in await recipients_cursor.to_list(length=100):
+        full_name = " ".join(
+            part for part in [recipient.get("first_name"), recipient.get("last_name")] if part
+        ).strip()
+        recipients_map[recipient["email"]] = full_name or recipient["email"]
+
     users_cursor = db["users"].find({"email": {"$in": recipient_emails}})
     users_map = {u["email"]: u.get("full_name", u["email"]) for u in await users_cursor.to_list(length=100)}
     
     recipient_activity = []
     for r in recipients_list:
         email = r["recipient_email"]
+        delivery_status = r.get("delivery_status", "pending")
+        if r.get("click_count", 0) > 0:
+            status_label = "Clicked"
+        elif r.get("open_count", 0) > 0:
+            status_label = "Opened"
+        elif delivery_status == "failed":
+            status_label = "Failed"
+        else:
+            status_label = "Delivered"
         recipient_activity.append({
             "email": email,
-            "name": users_map.get(email, email.split("@")[0]),
-            "status": "Clicked" if r.get("click_count", 0) > 0 else ("Opened" if r.get("open_count", 0) > 0 else "Delivered"),
+            "name": recipients_map.get(email) or users_map.get(email, email.split("@")[0]),
+            "status": status_label,
             "opened_at": r.get("last_open_at").isoformat() if r.get("last_open_at") else None,
             "clicked_at": r.get("last_click_at").isoformat() if r.get("last_click_at") else None,
         })

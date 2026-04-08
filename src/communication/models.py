@@ -7,6 +7,7 @@ class CampaignDB(BaseModel):
     name: str
     subject: str
     template_id: str
+    tags: List[str] = Field(default_factory=list)
     recipients: List[str] = Field(default_factory=list)
     merge_data: Dict[str, str] = Field(default_factory=dict)
     status: str = "draft"  # draft, scheduled, sent, partially_sent, failed

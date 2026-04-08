@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Dict, Any
+from typing import Dict, Any
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 
@@ -36,6 +36,11 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
     stats = stats_result[0] if stats_result else {
         "total_opens": 0, "total_clicks": 0, "unique_opens": 0, "unique_clicks": 0
     }
+
+    failed_total = await db["campaign_recipient_stats"].count_documents({
+        "owner_user_id": user_id,
+        "delivery_status": "failed"
+    })
     
     total_sent = sum(len(c.get("recipients", [])) for c in user_campaigns)
     
@@ -57,6 +62,7 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
         }},
         {"$group": {
             "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$ts"}},
+            "delivered": {"$sum": {"$cond": [{"$eq": ["$event_type", "delivered"]}, 1, 0]}},
             "opened": {"$sum": {"$cond": [{"$eq": ["$event_type", "open"]}, 1, 0]}},
             "clicked": {"$sum": {"$cond": [{"$eq": ["$event_type", "click"]}, 1, 0]}},
         }},
@@ -68,12 +74,15 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
     all_dates = sorted(list(set(list(sent_by_date.keys()) + [r["_id"] for r in event_results])))
     trend_data = []
     for d in all_dates:
-        ev = next((r for r in event_results if r["_id"] == d), {"opened": 0, "clicked": 0})
+        ev = next(
+            (r for r in event_results if r["_id"] == d),
+            {"delivered": 0, "opened": 0, "clicked": 0},
+        )
         sent = sent_by_date.get(d, 0)
         trend_data.append({
             "date": d,
             "sent": sent,
-            "delivered": sent, # Assume delivered = sent
+            "delivered": ev["delivered"],
             "opened": ev["opened"],
             "clicked": ev["clicked"]
         })
@@ -114,7 +123,7 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
         "messages_sent": f"{total_sent}" if total_sent < 1000 else f"{total_sent/1000:.1f}K",
         "avg_open_rate": f"{round((stats['unique_opens'] / total_sent * 100), 1) if total_sent > 0 else 0}%",
         "avg_click_rate": f"{round((stats['unique_clicks'] / total_sent * 100), 1) if total_sent > 0 else 0}%",
-        "bounce_rate": "0.0%",
+        "bounce_rate": f"{round((failed_total / total_sent * 100), 1) if total_sent > 0 else 0}%",
         "unsubscribe_rate": "0.0%",
         "trend_data": trend_data,
         "campaign_performance": performance,
@@ -150,19 +159,28 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
     stats = stats_result[0] if stats_result else {
         "total_opens": 0, "total_clicks": 0, "unique_opens": 0, "unique_clicks": 0
     }
+
+    delivered_count = await db["campaign_recipient_stats"].count_documents({
+        "campaign_id": campaign_id,
+        "delivery_status": "delivered"
+    })
+    failed_count = await db["campaign_recipient_stats"].count_documents({
+        "campaign_id": campaign_id,
+        "delivery_status": "failed"
+    })
     
     sent_count = len(campaign.get("recipients", []))
     
     metrics = {
         "total_sent": sent_count,
-        "delivered": sent_count,
+        "delivered": delivered_count,
         "opened": stats["unique_opens"],
         "clicked": stats["unique_clicks"],
-        "bounced": 0,
-        "delivery_rate": 100.0 if sent_count > 0 else 0,
+        "bounced": failed_count,
+        "delivery_rate": round((delivered_count / sent_count * 100), 1) if sent_count > 0 else 0,
         "open_rate": round((stats["unique_opens"] / sent_count * 100), 1) if sent_count > 0 else 0,
         "click_rate": round((stats["unique_clicks"] / sent_count * 100), 1) if sent_count > 0 else 0,
-        "bounce_rate": 0.0
+        "bounce_rate": round((failed_count / sent_count * 100), 1) if sent_count > 0 else 0
     }
     
     # Accurate Timeline (Hours since creation)
@@ -187,16 +205,35 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
     recipients_list = await recipients_cursor.to_list(length=100)
     
     recipient_emails = [r["recipient_email"] for r in recipients_list]
+    recipients_cursor = db["recipients"].find(
+        {"user_id": current_user["id"], "email": {"$in": recipient_emails}}
+    )
+    recipients_map = {}
+    for recipient in await recipients_cursor.to_list(length=100):
+        full_name = " ".join(
+            part for part in [recipient.get("first_name"), recipient.get("last_name")] if part
+        ).strip()
+        recipients_map[recipient["email"]] = full_name or recipient["email"]
+
     users_cursor = db["users"].find({"email": {"$in": recipient_emails}})
     users_map = {u["email"]: u.get("full_name", u["email"]) for u in await users_cursor.to_list(length=100)}
     
     recipient_activity = []
     for r in recipients_list:
         email = r["recipient_email"]
+        delivery_status = r.get("delivery_status", "pending")
+        if r.get("click_count", 0) > 0:
+            status_label = "Clicked"
+        elif r.get("open_count", 0) > 0:
+            status_label = "Opened"
+        elif delivery_status == "failed":
+            status_label = "Failed"
+        else:
+            status_label = "Delivered"
         recipient_activity.append({
             "email": email,
-            "name": users_map.get(email, email.split("@")[0]),
-            "status": "Clicked" if r.get("click_count", 0) > 0 else ("Opened" if r.get("open_count", 0) > 0 else "Delivered"),
+            "name": recipients_map.get(email) or users_map.get(email, email.split("@")[0]),
+            "status": status_label,
             "opened_at": r.get("last_open_at").isoformat() if r.get("last_open_at") else None,
             "clicked_at": r.get("last_click_at").isoformat() if r.get("last_click_at") else None,
         })

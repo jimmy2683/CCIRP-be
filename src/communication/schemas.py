@@ -6,6 +6,7 @@ class CampaignCreate(BaseModel):
     name: str = Field(..., description="Name of the campaign")
     subject: str = Field(..., description="Email or message subject")
     template_id: str = Field(..., description="ID of the selected template")
+    tags: List[str] = Field(default_factory=list, description="User-defined campaign tags")
     recipients: List[str] = Field(default_factory=list, description="List of recipient emails or IDs")
     merge_data: Dict[str, str] = Field(default_factory=dict, description="Values for template merge fields")
     scheduled_at: Optional[datetime] = Field(default=None, description="When to send the campaign")
@@ -15,6 +16,7 @@ class CampaignResponse(BaseModel):
     name: str
     subject: str
     template_id: str
+    tags: List[str] = Field(default_factory=list)
     status: str
     recipients: List[str]
     merge_data: Dict[str, str] = {}

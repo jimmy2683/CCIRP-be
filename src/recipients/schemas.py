@@ -8,6 +8,17 @@ class ConsentFlagsSchema(BaseModel):
     sms: bool = False
     whatsapp: bool = False
 
+class EngagementStatsSchema(BaseModel):
+    open_count_total: int = 0
+    click_count_total: int = 0
+    unique_open_campaigns: List[str] = []
+    unique_click_campaigns: List[str] = []
+    clicked_domains: List[str] = []
+    tag_scores: Dict[str, int] = {}
+    topic_scores: Dict[str, int] = {}
+    last_open_at: Optional[datetime] = None
+    last_click_at: Optional[datetime] = None
+
 class RecipientCreate(BaseModel):
     email: EmailStr
     phone: Optional[str] = None
@@ -38,5 +49,6 @@ class RecipientResponse(BaseModel):
     tags: List[str]
     consent_flags: ConsentFlagsSchema
     status: str
+    engagement: EngagementStatsSchema
     created_at: datetime
     updated_at: datetime

@@ -83,6 +83,39 @@ async def dispatch_campaign_emails(campaign_id: str, owner_user_id: str, templat
         for u in users_list:
             recipient_data_map[u["email"]] = u
 
+        # Auto-add missing recipients to Audience Management
+        existing_recips_cursor = db["recipients"].find({"user_id": owner_user_id, "email": {"$in": recipients}})
+        existing_recips_list = await existing_recips_cursor.to_list(length=1000)
+        existing_emails = {r["email"] for r in existing_recips_list}
+        
+        new_recipients = []
+        now = datetime.now(timezone.utc)
+        for email in recipients:
+            if email not in existing_emails:
+                user_data = recipient_data_map.get(email, {})
+                full_name = user_data.get("full_name", email.split("@")[0])
+                first_name = full_name.split(" ")[0] if full_name else email.split("@")[0]
+                new_recipients.append({
+                    "user_id": owner_user_id,
+                    "email": email,
+                    "first_name": first_name,
+                    "last_name": None,
+                    "phone": None,
+                    "tags": ["auto-added"],
+                    "attributes": {},
+                    "consent_flags": {"email": True, "sms": False, "whatsapp": False},
+                    "status": "active",
+                    "engagement": {
+                        "open_count_total": 0, "click_count_total": 0,
+                        "unique_open_campaigns": [], "unique_click_campaigns": [],
+                        "clicked_domains": [], "tag_scores": {}, "topic_scores": {},
+                        "last_open_at": None, "last_click_at": None
+                    },
+                    "created_at": now, "updated_at": now
+                })
+        if new_recipients:
+            await db["recipients"].insert_many(new_recipients)
+
     failed = []
     for email in recipients:
         await ensure_recipient_stats(

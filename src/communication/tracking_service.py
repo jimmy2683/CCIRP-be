@@ -35,23 +35,9 @@ def _tag_score_key(tag: str) -> str:
 
 
 def _recipient_stats_defaults(
-    campaign_id: str,
-    recipient_email: str,
-    owner_user_id: str,
     now: datetime,
 ) -> dict:
     return {
-        "campaign_id": campaign_id,
-        "recipient_email": recipient_email,
-        "owner_user_id": owner_user_id,
-        "campaign_tags": [],
-        "delivery_status": "pending",
-        "delivery_count": 0,
-        "delivery_failure_count": 0,
-        "open_count": 0,
-        "click_count": 0,
-        "unique_open_count": 0,
-        "unique_click_count": 0,
         "created_at": now,
     }
 
@@ -68,9 +54,10 @@ async def ensure_recipient_stats(
     await db["campaign_recipient_stats"].update_one(
         {"campaign_id": campaign_id, "recipient_email": recipient_email},
         {
-            "$setOnInsert": _recipient_stats_defaults(
-                campaign_id, recipient_email, owner_user_id, now
-            ),
+            "$setOnInsert": {
+                **_recipient_stats_defaults(now),
+                "delivery_status": "pending",
+            },
             "$set": {
                 "owner_user_id": owner_user_id,
                 "campaign_tags": campaign_tags,
@@ -109,9 +96,7 @@ async def record_delivery_event(
     )
 
     update_doc = {
-        "$setOnInsert": _recipient_stats_defaults(
-            campaign_id, recipient_email, owner_user_id, now
-        ),
+        "$setOnInsert": _recipient_stats_defaults(now),
         "$set": {
             "owner_user_id": owner_user_id,
             "campaign_tags": campaign_tags,
@@ -201,9 +186,7 @@ async def record_engagement_event(
     await db["campaign_recipient_stats"].update_one(
         {"campaign_id": campaign_id, "recipient_email": recipient_email},
         {
-            "$setOnInsert": _recipient_stats_defaults(
-                campaign_id, recipient_email, owner_user_id, now
-            ),
+            "$setOnInsert": _recipient_stats_defaults(now),
             "$inc": stats_inc,
             "$set": stats_set,
         },

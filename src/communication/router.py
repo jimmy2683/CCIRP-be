@@ -10,6 +10,7 @@ from src.communication.tracking_utils import inject_tracking
 from src.communication.schemas import CampaignCreate, CampaignResponse
 from src.communication.models import CampaignDB
 from src.communication.email_service import EmailService
+from src.groups.service import resolve_static_group_emails
 from src.auth.dependencies import get_current_active_user
 from src.database import get_database
 
@@ -29,6 +30,21 @@ def normalize_campaign_tags(tags: List[str]) -> List[str]:
         seen.add(key)
         normalized_tags.append(clean_tag)
     return normalized_tags
+
+
+def dedupe_emails(emails: List[str]) -> List[str]:
+    deduped_emails = []
+    seen = set()
+    for email in emails:
+        clean_email = str(email).strip()
+        if not clean_email:
+            continue
+        key = clean_email.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_emails.append(clean_email)
+    return deduped_emails
 
 
 def render_template(body_html: str, merge_data: dict, recipient_email: str, recipient_data: dict) -> str:
@@ -126,6 +142,13 @@ async def create_campaign(
 
         campaign_payload = campaign_in.model_dump()
         campaign_payload["tags"] = normalize_campaign_tags(campaign_payload.get("tags", []))
+        group_emails = await resolve_static_group_emails(
+            current_user["id"],
+            campaign_payload.get("group_ids", []),
+        )
+        campaign_payload["recipients"] = dedupe_emails(
+            [*campaign_payload.get("recipients", []), *group_emails]
+        )
 
         campaign_db = CampaignDB(
             **campaign_payload,
@@ -139,15 +162,15 @@ async def create_campaign(
 
         # Dispatch emails in background
         subject = campaign_in.subject or template.get("subject", "No Subject")
-        if campaign_in.recipients:
+        if campaign_payload["recipients"]:
             background_tasks.add_task(
                 dispatch_campaign_emails,
                 campaign_id,
                 current_user["id"],
                 template,
-                campaign_in.recipients,
+                campaign_payload["recipients"],
                 subject,
-                campaign_in.merge_data or {},
+                campaign_payload.get("merge_data") or {},
             )
         
         return campaign_dict
@@ -168,6 +191,7 @@ async def list_campaigns(current_user: dict = Depends(get_current_active_user)):
     
     for camp in campaigns:
         camp.setdefault("tags", [])
+        camp.setdefault("group_ids", [])
         camp["id"] = str(camp["_id"])
         
     return campaigns
@@ -203,6 +227,7 @@ async def get_campaign(campaign_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=403, detail="Not authorized to view this campaign")
 
     campaign.setdefault("tags", [])
+    campaign.setdefault("group_ids", [])
     campaign["id"] = str(campaign["_id"])
     return campaign
 

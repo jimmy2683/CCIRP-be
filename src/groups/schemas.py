@@ -8,12 +8,14 @@ class StaticGroupCreate(BaseModel):
     name: str = Field(..., min_length=1, description="Static group name")
     description: Optional[str] = None
     recipient_ids: List[str] = Field(default_factory=list)
+    import_group_ids: List[str] = Field(default_factory=list)
 
 
 class StaticGroupUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1)
     description: Optional[str] = None
     recipient_ids: Optional[List[str]] = None
+    import_group_ids: Optional[List[str]] = None
 
 
 class StaticGroupResponse(BaseModel):

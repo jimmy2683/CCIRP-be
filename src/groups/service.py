@@ -56,6 +56,46 @@ async def _resolve_recipients(user_id: str, recipient_ids: Iterable[str]) -> tup
     return recipient_ids, recipient_emails
 
 
+async def _resolve_import_groups(
+    user_id: str,
+    group_ids: Iterable[str],
+    *,
+    exclude_group_id: str | None = None,
+) -> tuple[List[str], List[str]]:
+    group_ids = _dedupe_strings(group_ids)
+    if not group_ids:
+        return [], []
+
+    if exclude_group_id and exclude_group_id in group_ids:
+        raise HTTPException(status_code=400, detail="A static group cannot import itself")
+
+    object_ids = []
+    for group_id in group_ids:
+        if not ObjectId.is_valid(group_id):
+            raise HTTPException(status_code=400, detail=f"Invalid group ID: {group_id}")
+        object_ids.append(ObjectId(group_id))
+
+    db = get_database()
+    groups = await db["groups"].find(
+        {"_id": {"$in": object_ids}, "created_by": user_id, "type": "static"},
+        {"recipient_ids": 1, "recipient_emails": 1},
+    ).to_list(length=len(object_ids))
+
+    groups_by_id = {str(group["_id"]): group for group in groups}
+    missing_ids = [group_id for group_id in group_ids if group_id not in groups_by_id]
+    if missing_ids:
+        raise HTTPException(status_code=400, detail=f"Static groups not found: {', '.join(missing_ids)}")
+
+    imported_recipient_ids = []
+    imported_recipient_emails = []
+    for group_id in group_ids:
+        group = groups_by_id[group_id]
+        imported_recipient_ids.extend(group.get("recipient_ids", []))
+        imported_recipient_emails.extend(group.get("recipient_emails", []))
+
+    return _dedupe_strings(imported_recipient_ids), _dedupe_strings(imported_recipient_emails)
+
+
 async def create_static_group(user_id: str, group_data: StaticGroupCreate) -> dict:
     db = get_database()
     name = group_data.name.strip()
@@ -66,7 +106,10 @@ async def create_static_group(user_id: str, group_data: StaticGroupCreate) -> di
     if existing:
         raise HTTPException(status_code=400, detail="A static group with this name already exists")
 
-    recipient_ids, recipient_emails = await _resolve_recipients(user_id, group_data.recipient_ids)
+    direct_recipient_ids, direct_recipient_emails = await _resolve_recipients(user_id, group_data.recipient_ids)
+    imported_recipient_ids, imported_recipient_emails = await _resolve_import_groups(user_id, group_data.import_group_ids)
+    recipient_ids = _dedupe_strings([*imported_recipient_ids, *direct_recipient_ids])
+    recipient_emails = _dedupe_strings([*imported_recipient_emails, *direct_recipient_emails])
     group = GroupDB(
         name=name,
         description=group_data.description,
@@ -126,8 +169,18 @@ async def update_static_group(user_id: str, group_id: str, group_data: StaticGro
     if group_data.description is not None:
         update_doc["description"] = group_data.description
 
-    if group_data.recipient_ids is not None:
-        recipient_ids, recipient_emails = await _resolve_recipients(user_id, group_data.recipient_ids)
+    if group_data.recipient_ids is not None or group_data.import_group_ids is not None:
+        direct_recipient_ids, direct_recipient_emails = await _resolve_recipients(
+            user_id,
+            group_data.recipient_ids if group_data.recipient_ids is not None else existing.get("recipient_ids", []),
+        )
+        imported_recipient_ids, imported_recipient_emails = await _resolve_import_groups(
+            user_id,
+            group_data.import_group_ids if group_data.import_group_ids is not None else [],
+            exclude_group_id=group_id,
+        )
+        recipient_ids = _dedupe_strings([*imported_recipient_ids, *direct_recipient_ids])
+        recipient_emails = _dedupe_strings([*imported_recipient_emails, *direct_recipient_emails])
         update_doc["recipient_ids"] = recipient_ids
         update_doc["recipient_emails"] = recipient_emails
 

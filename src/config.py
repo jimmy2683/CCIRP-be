@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # SMTP Email Settings
+    EMAIL_PROVIDER: str = "smtp"
     SMTP_HOST: str = "smtp.example.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = "user@example.com"
@@ -22,6 +23,11 @@ class Settings(BaseSettings):
     MAIL_FROM: str = "noreply@example.com"
     SMTP_TLS: bool = True
     SMTP_SSL: bool = False
+    
+    # API email provider settings
+    RESEND_API_KEY: str = ""
+    RESEND_API_BASE_URL: str = "https://api.resend.com"
+    RESEND_REPLY_TO: str = ""
 
     # Frontend URL
     FRONTEND_URL: str = "http://localhost:3000"

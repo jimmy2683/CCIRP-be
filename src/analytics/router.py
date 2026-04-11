@@ -10,6 +10,25 @@ router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 MIN_AWARE_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
 
+
+def ensure_aware_datetime(value: Any, default: datetime | None = None) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return default or datetime.now(timezone.utc)
+
+
+def get_campaign_channels(campaign: Dict[str, Any]) -> list[str]:
+    channels = []
+    for channel in campaign.get("channels", ["email"]) or ["email"]:
+        normalized = str(channel).strip().lower()
+        if normalized:
+            channels.append(normalized)
+    return channels or ["email"]
+
+
+def supports_open_tracking(campaign: Dict[str, Any]) -> bool:
+    return all(channel == "email" for channel in get_campaign_channels(campaign))
+
 @router.get("/overview", response_model=Dict[str, Any])
 async def get_analytics_overview(current_user: dict = Depends(get_current_active_user)):
     db = get_database()
@@ -58,8 +77,9 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
     # Sent counts from campaigns
     sent_by_date = {}
     for camp in user_campaigns:
-        if "created_at" in camp and camp["created_at"] >= thirty_days_ago:
-            date_str = camp["created_at"].strftime("%Y-%m-%d")
+        created_at = ensure_aware_datetime(camp.get("created_at"))
+        if created_at >= thirty_days_ago:
+            date_str = created_at.strftime("%Y-%m-%d")
             sent_by_date[date_str] = sent_by_date.get(date_str, 0) + (
                 len(camp.get("recipients", [])) * max(len(camp.get("channels", ["email"])), 1)
             )
@@ -100,7 +120,7 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
     # 4. Recent Campaign Performance
     recent_campaigns = sorted(
         user_campaigns,
-        key=lambda x: x.get("created_at", MIN_AWARE_DATETIME),
+        key=lambda x: ensure_aware_datetime(x.get("created_at"), MIN_AWARE_DATETIME),
         reverse=True,
     )[:5]
     
@@ -129,7 +149,8 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
             "sent": sent_count,
             "openRate": open_rate,
             "clickRate": click_rate,
-            "date": camp["created_at"].strftime("%Y-%m-%d") if isinstance(camp.get("created_at"), datetime) else "N/A"
+            "date": ensure_aware_datetime(camp.get("created_at"), MIN_AWARE_DATETIME).strftime("%Y-%m-%d")
+            if isinstance(camp.get("created_at"), datetime) else "N/A"
         })
 
     return {
@@ -183,24 +204,27 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
         "delivery_status": "failed"
     })
     
-    sent_count = len(campaign.get("recipients", [])) * max(len(campaign.get("channels", ["email"])), 1)
+    channels = get_campaign_channels(campaign)
+    open_tracking_enabled = supports_open_tracking(campaign)
+    sent_count = len(campaign.get("recipients", [])) * max(len(channels), 1)
+    open_tracking_sent_count = len(campaign.get("recipients", [])) if open_tracking_enabled else 0
     
     metrics = {
         "total_sent": sent_count,
         "delivered": delivered_count,
-        "opened": stats["unique_opens"],
+        "opened": stats["unique_opens"] if open_tracking_enabled else 0,
         "clicked": stats["unique_clicks"],
-        "total_opens": stats["total_opens"],
+        "total_opens": stats["total_opens"] if open_tracking_enabled else 0,
         "total_clicks": stats["total_clicks"],
         "bounced": failed_count,
         "delivery_rate": round((delivered_count / sent_count * 100), 1) if sent_count > 0 else 0,
-        "open_rate": round((stats["unique_opens"] / sent_count * 100), 1) if sent_count > 0 else 0,
+        "open_rate": round((stats["unique_opens"] / open_tracking_sent_count * 100), 1) if open_tracking_sent_count > 0 else 0,
         "click_rate": round((stats["unique_clicks"] / sent_count * 100), 1) if sent_count > 0 else 0,
         "bounce_rate": round((failed_count / sent_count * 100), 1) if sent_count > 0 else 0
     }
     
     # Accurate Timeline (Hours since creation)
-    created_at = campaign.get("created_at", datetime.now(timezone.utc))
+    created_at = ensure_aware_datetime(campaign.get("created_at"))
     timeline_pipeline = [
         {"$match": {"campaign_id": campaign_id}},
         {"$project": {
@@ -240,7 +264,7 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
         delivery_status = r.get("delivery_status", "pending")
         if r.get("click_count", 0) > 0:
             status_label = "Clicked"
-        elif r.get("open_count", 0) > 0:
+        elif open_tracking_enabled and r.get("open_count", 0) > 0:
             status_label = "Opened"
         elif delivery_status == "failed":
             status_label = "Failed"
@@ -251,16 +275,24 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
             "name": recipients_map.get(email) or users_map.get(email, email.split("@")[0]),
             "status": status_label,
             "delivery_status": delivery_status,
-            "open_count": r.get("open_count", 0),
+            "open_count": r.get("open_count", 0) if open_tracking_enabled else 0,
             "click_count": r.get("click_count", 0),
-            "unique_open_count": r.get("unique_open_count", 0),
+            "unique_open_count": r.get("unique_open_count", 0) if open_tracking_enabled else 0,
             "unique_click_count": r.get("unique_click_count", 0),
-            "opened_at": r.get("last_open_at").isoformat() if r.get("last_open_at") else None,
+            "opened_at": r.get("last_open_at").isoformat() if open_tracking_enabled and r.get("last_open_at") else None,
             "clicked_at": r.get("last_click_at").isoformat() if r.get("last_click_at") else None,
         })
         
     return {
         "metrics": metrics,
-        "timeline": [{"time": f"{int(r['_id'])}h", "opens": r["opens"], "clicks": r["clicks"]} for r in timeline_results],
+        "supports_open_tracking": open_tracking_enabled,
+        "timeline": [
+            {
+                "time": f"{int(r['_id'])}h",
+                "opens": r["opens"] if open_tracking_enabled else 0,
+                "clicks": r["clicks"],
+            }
+            for r in timeline_results
+        ],
         "recipients": recipient_activity
     }

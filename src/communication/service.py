@@ -9,7 +9,7 @@ from pymongo import ReturnDocument, UpdateOne
 
 from src.communication.messaging_service import MessagingService, html_to_text
 from src.communication.tracking_service import ensure_recipient_stats, record_delivery_event
-from src.communication.tracking_utils import inject_tracking
+from src.communication.tracking_utils import inject_click_tracking_text, inject_tracking
 from src.config import settings
 from src.database import get_database
 from src.groups.schemas import DynamicGroupResolveRequest
@@ -237,14 +237,31 @@ async def _send_channel_message(
             recipient_email,
             owner_user_id,
             settings.TRACKING_BASE_URL,
+            channel="email",
         )
         return await MessagingService.send_email(recipient_email, subject, tracked_body)
 
     if channel == "sms":
-        return await MessagingService.send_sms(recipient_doc.get("phone"), rendered_text)
+        tracked_text = inject_click_tracking_text(
+            rendered_text,
+            campaign_id,
+            recipient_email,
+            owner_user_id,
+            settings.TRACKING_BASE_URL,
+            channel="sms",
+        )
+        return await MessagingService.send_sms(recipient_doc.get("phone"), tracked_text)
 
     if channel == "whatsapp":
-        return await MessagingService.send_whatsapp(recipient_doc.get("phone"), rendered_text)
+        tracked_text = inject_click_tracking_text(
+            rendered_text,
+            campaign_id,
+            recipient_email,
+            owner_user_id,
+            settings.TRACKING_BASE_URL,
+            channel="whatsapp",
+        )
+        return await MessagingService.send_whatsapp(recipient_doc.get("phone"), tracked_text)
 
     return False, f"Unsupported channel: {channel}"
 

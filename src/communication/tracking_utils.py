@@ -59,36 +59,11 @@ def verify_tracking_token(token: str) -> dict:
     return payload
 
 
-def _rewrite_anchor_links(html: str, click_base_url: str) -> str:
-    href_pattern = re.compile(r'href=["\']([^"\']+)["\']', re.IGNORECASE)
-
-    def repl(match: re.Match) -> str:
-        original_url = match.group(1).strip()
-        if not original_url:
-            return match.group(0)
-
-        lower = original_url.lower()
-        if (
-            lower.startswith("#")
-            or lower.startswith("mailto:")
-            or lower.startswith("tel:")
-            or lower.startswith("javascript:")
-            or "/track/click/" in lower
-        ):
-            return match.group(0)
-
-        wrapped = f"{click_base_url}?u={quote(original_url, safe='')}"
-        return f'href="{wrapped}"'
-
-    return href_pattern.sub(repl, html)
-
-
-def inject_tracking(
-    html: str,
+def _build_tracking_token(
     campaign_id: str,
     recipient_email: str,
     owner_user_id: str,
-    tracking_base_url: str,
+    channel: str,
 ) -> str:
     now = int(time.time())
     exp = now + int(settings.TRACKING_TOKEN_TTL_SECONDS)
@@ -97,9 +72,78 @@ def inject_tracking(
         "c": campaign_id,
         "r": recipient_email,
         "o": owner_user_id,
+        "ch": channel,
         "exp": exp,
     }
-    token = create_tracking_token(payload)
+    return create_tracking_token(payload)
+
+
+def _wrap_click_url(original_url: str, click_base_url: str) -> str:
+    clean_url = original_url.strip()
+    if not clean_url:
+        return original_url
+
+    lower = clean_url.lower()
+    if (
+        lower.startswith("#")
+        or lower.startswith("mailto:")
+        or lower.startswith("tel:")
+        or lower.startswith("javascript:")
+        or "/track/click/" in lower
+    ):
+        return original_url
+
+    return f"{click_base_url}?u={quote(clean_url, safe='')}"
+
+
+def _rewrite_anchor_links(html: str, click_base_url: str) -> str:
+    href_pattern = re.compile(r'href=["\']([^"\']+)["\']', re.IGNORECASE)
+
+    def repl(match: re.Match) -> str:
+        original_url = match.group(1).strip()
+        if not original_url:
+            return match.group(0)
+
+        wrapped = _wrap_click_url(original_url, click_base_url)
+        if wrapped == original_url:
+            return match.group(0)
+        return f'href="{wrapped}"'
+
+    return href_pattern.sub(repl, html)
+
+
+def _rewrite_plain_text_links(text: str, click_base_url: str) -> str:
+    if not text:
+        return text
+
+    url_pattern = re.compile(r"(?P<url>(?:https?://|www\.)[^\s<>\"]+)", re.IGNORECASE)
+
+    def repl(match: re.Match) -> str:
+        matched_url = match.group("url")
+        candidate = matched_url
+        trailing = ""
+        while candidate and (
+            candidate[-1] in ".,!?;:"
+            or (candidate[-1] == ")" and candidate.count(")") > candidate.count("("))
+        ):
+            trailing = candidate[-1] + trailing
+            candidate = candidate[:-1]
+
+        wrapped = _wrap_click_url(candidate, click_base_url)
+        return f"{wrapped}{trailing}"
+
+    return url_pattern.sub(repl, text)
+
+
+def inject_tracking(
+    html: str,
+    campaign_id: str,
+    recipient_email: str,
+    owner_user_id: str,
+    tracking_base_url: str,
+    channel: str = "email",
+) -> str:
+    token = _build_tracking_token(campaign_id, recipient_email, owner_user_id, channel)
 
     open_url = f"{tracking_base_url}/track/open/{token}.png"
     click_base = f"{tracking_base_url}/track/click/{token}"
@@ -115,3 +159,16 @@ def inject_tracking(
         idx = body_close.start()
         return rewritten[:idx] + pixel_tag + rewritten[idx:]
     return rewritten + pixel_tag
+
+
+def inject_click_tracking_text(
+    text: str,
+    campaign_id: str,
+    recipient_email: str,
+    owner_user_id: str,
+    tracking_base_url: str,
+    channel: str,
+) -> str:
+    token = _build_tracking_token(campaign_id, recipient_email, owner_user_id, channel)
+    click_base = f"{tracking_base_url}/track/click/{token}"
+    return _rewrite_plain_text_links(text, click_base)

@@ -143,14 +143,15 @@ async def record_engagement_event(
     ip: Optional[str],
     user_agent: Optional[str],
     link_url: Optional[str] = None,
+    channel: str = "email",
 ) -> None:
     now = datetime.now(timezone.utc)
     campaign_tags = await _get_campaign_tags(db, campaign_id)
 
     if event_type == "open":
-        unique_key = f"open:{campaign_id}:{recipient_email}"
+        unique_key = f"open:{campaign_id}:{recipient_email}:{channel}"
     else:
-        unique_key = f"click:{campaign_id}:{recipient_email}:{link_url or ''}"
+        unique_key = f"click:{campaign_id}:{recipient_email}:{channel}:{link_url or ''}"
 
     unique_exists = await db["tracking_uniques"].find_one({"_id": unique_key})
     is_unique = unique_exists is None
@@ -165,7 +166,7 @@ async def record_engagement_event(
             "owner_user_id": owner_user_id,
             "campaign_tags": campaign_tags,
             "campaign_tag_keys": [_tag_score_key(tag) for tag in campaign_tags],
-            "channel": "email",
+            "channel": channel,
             "link_url": link_url,
             "ip": ip,
             "user_agent": user_agent,
@@ -195,11 +196,14 @@ async def record_engagement_event(
             stats_inc["unique_click_count"] = 1
 
     await db["campaign_recipient_stats"].update_one(
-        {"campaign_id": campaign_id, "recipient_email": recipient_email, "channel": "email"},
+        {"campaign_id": campaign_id, "recipient_email": recipient_email, "channel": channel},
         {
             "$setOnInsert": _recipient_stats_defaults(now),
             "$inc": stats_inc,
-            "$set": stats_set,
+            "$set": {
+                **stats_set,
+                "channel": channel,
+            },
         },
         upsert=True,
     )

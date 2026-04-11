@@ -16,6 +16,12 @@ from src.database import get_database
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
 
 
+def ensure_aware_datetime(value: Any, default: datetime | None = None) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return default or datetime.now(timezone.utc)
+
+
 def normalize_campaign_tags(tags: List[str]) -> List[str]:
     normalized_tags = []
     seen = set()
@@ -44,6 +50,19 @@ def dedupe_emails(emails: List[str]) -> List[str]:
         seen.add(key)
         deduped_emails.append(clean_email)
     return deduped_emails
+
+
+def get_campaign_channels(campaign: Dict[str, Any]) -> List[str]:
+    channels = []
+    for channel in campaign.get("channels", ["email"]) or ["email"]:
+        normalized = str(channel).strip().lower()
+        if normalized:
+            channels.append(normalized)
+    return channels or ["email"]
+
+
+def supports_open_tracking(campaign: Dict[str, Any]) -> bool:
+    return all(channel == "email" for channel in get_campaign_channels(campaign))
 
 @router.post("/", response_model=CampaignResponse, status_code=status.HTTP_201_CREATED)
 async def create_campaign(
@@ -209,24 +228,27 @@ async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict =
         "delivery_status": "failed"
     })
     
-    sent_count = len(campaign.get("recipients", [])) * max(len(campaign.get("channels", ["email"])), 1)
+    channels = get_campaign_channels(campaign)
+    open_tracking_enabled = supports_open_tracking(campaign)
+    sent_count = len(campaign.get("recipients", [])) * max(len(channels), 1)
+    open_tracking_sent_count = len(campaign.get("recipients", [])) if open_tracking_enabled else 0
     
     metrics = {
         "total_sent": sent_count,
         "delivered": delivered_count,
-        "opened": stats["unique_opens"],
+        "opened": stats["unique_opens"] if open_tracking_enabled else 0,
         "clicked": stats["unique_clicks"],
-        "total_opens": stats["total_opens"],
+        "total_opens": stats["total_opens"] if open_tracking_enabled else 0,
         "total_clicks": stats["total_clicks"],
         "bounced": failed_count,
         "delivery_rate": round((delivered_count / sent_count * 100), 1) if sent_count > 0 else 0,
-        "open_rate": round((stats["unique_opens"] / sent_count * 100), 1) if sent_count > 0 else 0,
+        "open_rate": round((stats["unique_opens"] / open_tracking_sent_count * 100), 1) if open_tracking_sent_count > 0 else 0,
         "click_rate": round((stats["unique_clicks"] / sent_count * 100), 1) if sent_count > 0 else 0,
         "bounce_rate": round((failed_count / sent_count * 100), 1) if sent_count > 0 else 0
     }
     
     # Accurate Timeline (Hours since creation)
-    created_at = campaign.get("created_at", datetime.now(timezone.utc))
+    created_at = ensure_aware_datetime(campaign.get("created_at"))
     timeline_pipeline = [
         {"$match": {"campaign_id": campaign_id}},
         {"$project": {
@@ -269,7 +291,7 @@ async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict =
         delivery_status = r.get("delivery_status", "pending")
         if r.get("click_count", 0) > 0:
             status_label = "Clicked"
-        elif r.get("open_count", 0) > 0:
+        elif open_tracking_enabled and r.get("open_count", 0) > 0:
             status_label = "Opened"
         elif delivery_status == "failed":
             status_label = "Failed"
@@ -280,16 +302,24 @@ async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict =
             "name": recipients_map.get(email) or users_map.get(email, email.split("@")[0]),
             "status": status_label,
             "delivery_status": delivery_status,
-            "open_count": r.get("open_count", 0),
+            "open_count": r.get("open_count", 0) if open_tracking_enabled else 0,
             "click_count": r.get("click_count", 0),
-            "unique_open_count": r.get("unique_open_count", 0),
+            "unique_open_count": r.get("unique_open_count", 0) if open_tracking_enabled else 0,
             "unique_click_count": r.get("unique_click_count", 0),
-            "opened_at": r.get("last_open_at").isoformat() if r.get("last_open_at") else None,
+            "opened_at": r.get("last_open_at").isoformat() if open_tracking_enabled and r.get("last_open_at") else None,
             "clicked_at": r.get("last_click_at").isoformat() if r.get("last_click_at") else None,
         })
         
     return {
         "metrics": metrics,
-        "timeline": [{"time": f"{int(r['_id'])}h", "opens": r["opens"], "clicks": r["clicks"]} for r in timeline_results],
+        "supports_open_tracking": open_tracking_enabled,
+        "timeline": [
+            {
+                "time": f"{int(r['_id'])}h",
+                "opens": r["opens"] if open_tracking_enabled else 0,
+                "clicks": r["clicks"],
+            }
+            for r in timeline_results
+        ],
         "recipients": recipient_activity
     }

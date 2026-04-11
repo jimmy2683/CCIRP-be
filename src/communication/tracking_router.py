@@ -32,6 +32,7 @@ async def track_open(token: str, request: Request):
         owner_user_id=str(payload["o"]),
         ip=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
+        channel=str(payload.get("ch", "email")),
     )
 
     return Response(content=TRANSPARENT_PNG_BYTES, media_type="image/png")
@@ -58,6 +59,7 @@ async def track_click(token: str, request: Request, u: str = Query(..., descript
         link_url=destination_url,
         ip=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
+        channel=str(payload.get("ch", "email")),
     )
 
     return RedirectResponse(url=destination_url, status_code=302)

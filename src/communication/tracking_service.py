@@ -63,6 +63,7 @@ async def ensure_recipient_stats(
             "$set": {
                 "owner_user_id": owner_user_id,
                 "campaign_tags": campaign_tags,
+                "campaign_tag_keys": [_tag_score_key(tag) for tag in campaign_tags],
                 "updated_at": now,
             },
         },
@@ -91,6 +92,7 @@ async def record_delivery_event(
             "recipient_email": recipient_email,
             "owner_user_id": owner_user_id,
             "campaign_tags": campaign_tags,
+            "campaign_tag_keys": [_tag_score_key(tag) for tag in campaign_tags],
             "channel": channel,
             "delivery_status": "delivered" if delivered else "failed",
             "error_message": error_message,
@@ -104,6 +106,7 @@ async def record_delivery_event(
         "$set": {
             "owner_user_id": owner_user_id,
             "campaign_tags": campaign_tags,
+            "campaign_tag_keys": [_tag_score_key(tag) for tag in campaign_tags],
             "channel": channel,
             "delivery_status": "delivered" if delivered else "failed",
             "updated_at": now,
@@ -161,6 +164,7 @@ async def record_engagement_event(
             "recipient_email": recipient_email,
             "owner_user_id": owner_user_id,
             "campaign_tags": campaign_tags,
+            "campaign_tag_keys": [_tag_score_key(tag) for tag in campaign_tags],
             "channel": "email",
             "link_url": link_url,
             "ip": ip,
@@ -174,6 +178,7 @@ async def record_engagement_event(
     stats_set = {
         "owner_user_id": owner_user_id,
         "campaign_tags": campaign_tags,
+        "campaign_tag_keys": [_tag_score_key(tag) for tag in campaign_tags],
         "updated_at": now,
     }
 
@@ -214,13 +219,19 @@ async def record_engagement_event(
             if is_unique:
                 rec_add["engagement.unique_open_campaigns"] = campaign_id
                 for tag in campaign_tags:
-                    rec_inc[f"engagement.tag_scores.{_tag_score_key(tag)}"] = 1
+                    tag_key = _tag_score_key(tag)
+                    rec_inc[f"engagement.tag_scores.{tag_key}"] = 2
+                    rec_inc[f"engagement.tag_interaction_counts.{tag_key}"] = 1
 
         if event_type == "click":
             rec_inc["engagement.click_count_total"] = 1
             rec_set["engagement.last_click_at"] = now
             if is_unique:
                 rec_add["engagement.unique_click_campaigns"] = campaign_id
+                for tag in campaign_tags:
+                    tag_key = _tag_score_key(tag)
+                    rec_inc[f"engagement.tag_scores.{tag_key}"] = 4
+                    rec_inc[f"engagement.tag_interaction_counts.{tag_key}"] = 1
 
             if link_url:
                 domain = urlparse(link_url).netloc.lower()

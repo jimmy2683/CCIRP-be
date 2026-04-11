@@ -15,6 +15,7 @@ class EngagementStatsSchema(BaseModel):
     unique_click_campaigns: List[str] = []
     clicked_domains: List[str] = []
     tag_scores: Dict[str, int] = {}
+    tag_interaction_counts: Dict[str, int] = {}
     topic_scores: Dict[str, int] = {}
     last_open_at: Optional[datetime] = None
     last_click_at: Optional[datetime] = None

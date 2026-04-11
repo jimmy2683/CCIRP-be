@@ -12,6 +12,8 @@ from src.communication.tracking_service import ensure_recipient_stats, record_de
 from src.communication.tracking_utils import inject_tracking
 from src.config import settings
 from src.database import get_database
+from src.groups.schemas import DynamicGroupResolveRequest
+from src.groups.service import resolve_dynamic_group_emails
 
 
 ALLOWED_CAMPAIGN_CHANNELS = ("email", "sms", "whatsapp")
@@ -159,6 +161,7 @@ async def _ensure_audience_recipients(
                 "unique_click_campaigns": [],
                 "clicked_domains": [],
                 "tag_scores": {},
+                "tag_interaction_counts": {},
                 "topic_scores": {},
                 "last_open_at": None,
                 "last_click_at": None,
@@ -517,9 +520,40 @@ async def enqueue_campaign_recipients(campaign_id: str) -> int:
     if not campaign:
         return 0
 
-    recipients = campaign.get("recipients", [])
+    base_recipients = campaign.get("recipients", [])
+    dynamic_group_requests = [
+        DynamicGroupResolveRequest.model_validate(request)
+        for request in (campaign.get("dynamic_groups") or [])
+    ]
+    dynamic_group_emails: List[str] = []
+    if dynamic_group_requests:
+        dynamic_group_emails, _ = await resolve_dynamic_group_emails(
+            campaign["created_by"],
+            dynamic_group_requests,
+        )
+
+    recipients = []
+    seen_recipients = set()
+    for recipient_email in [*base_recipients, *dynamic_group_emails]:
+        clean_email = str(recipient_email).strip()
+        recipient_key = clean_email.lower()
+        if not clean_email or recipient_key in seen_recipients:
+            continue
+        seen_recipients.add(recipient_key)
+        recipients.append(clean_email)
+
     if not recipients:
         return 0
+
+    await db["campaigns"].update_one(
+        _campaign_query(campaign_id),
+        {
+            "$set": {
+                "recipients": recipients,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
 
     recipient_data_map: Dict[str, dict] = {}
     users_list = await db["users"].find({"email": {"$in": recipients}}).to_list(length=1000)
@@ -630,11 +664,27 @@ async def _prepare_pending_campaign_queues_once(limit: int = 10) -> int:
     if db is None:
         return 0
 
+    now = datetime.now(timezone.utc)
     cursor = db["campaigns"].find(
         {
-            "status": {"$in": ["queued", "scheduled", "dispatching"]},
-            "recipients": {"$exists": True, "$ne": []},
             "queue_prepared_at": {"$exists": False},
+            "$and": [
+                {
+                    "$or": [
+                        {"status": {"$in": ["queued", "dispatching"]}},
+                        {
+                            "status": "scheduled",
+                            "scheduled_at": {"$lte": now},
+                        },
+                    ],
+                },
+                {
+                    "$or": [
+                        {"recipients": {"$exists": True, "$ne": []}},
+                        {"dynamic_groups": {"$exists": True, "$ne": []}},
+                    ],
+                },
+            ],
         }
     ).sort("created_at", 1).limit(limit)
 

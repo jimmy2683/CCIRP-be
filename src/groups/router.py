@@ -4,6 +4,10 @@ from fastapi import APIRouter, Depends, File, UploadFile, status
 
 from src.auth.dependencies import get_current_active_user
 from src.groups.schemas import (
+    DynamicGroupPreferenceResponse,
+    DynamicGroupPreferenceUpsert,
+    DynamicGroupResolvePayload,
+    DynamicGroupResolveResponse,
     StaticGroupCreate,
     StaticGroupCsvImportResponse,
     StaticGroupResponse,
@@ -13,8 +17,11 @@ from src.groups.service import (
     create_static_group,
     delete_static_group,
     import_static_group_csv,
+    list_dynamic_group_preferences,
     get_static_group,
     list_static_groups,
+    resolve_dynamic_group_payload,
+    upsert_dynamic_group_preference,
     update_static_group,
 )
 
@@ -33,6 +40,27 @@ async def create_static_group_endpoint(
 @router.get("/", response_model=List[StaticGroupResponse])
 async def list_static_groups_endpoint(current_user: dict = Depends(get_current_active_user)):
     return await list_static_groups(current_user["id"])
+
+
+@router.get("/dynamic/preferences", response_model=List[DynamicGroupPreferenceResponse])
+async def list_dynamic_group_preferences_endpoint(current_user: dict = Depends(get_current_active_user)):
+    return await list_dynamic_group_preferences(current_user["id"])
+
+
+@router.post("/dynamic/preferences", response_model=DynamicGroupPreferenceResponse, status_code=status.HTTP_201_CREATED)
+async def upsert_dynamic_group_preference_endpoint(
+    payload: DynamicGroupPreferenceUpsert,
+    current_user: dict = Depends(get_current_active_user),
+):
+    return await upsert_dynamic_group_preference(current_user["id"], payload)
+
+
+@router.post("/dynamic/resolve", response_model=DynamicGroupResolveResponse)
+async def resolve_dynamic_groups_endpoint(
+    payload: DynamicGroupResolvePayload,
+    current_user: dict = Depends(get_current_active_user),
+):
+    return {"groups": await resolve_dynamic_group_payload(current_user["id"], payload.groups)}
 
 
 @router.post("/import-csv", response_model=StaticGroupCsvImportResponse)

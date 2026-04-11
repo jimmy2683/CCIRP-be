@@ -73,8 +73,13 @@ async def create_campaign(
         campaign_payload["recipients"] = dedupe_emails(
             [*campaign_payload.get("recipients", []), *group_emails]
         )
+        campaign_payload["dynamic_groups"] = [
+            request.model_dump(exclude_none=True)
+            for request in campaign_in.dynamic_groups
+        ]
         now = datetime.now(timezone.utc)
-        if campaign_payload["recipients"]:
+        has_audience = bool(campaign_payload["recipients"] or campaign_payload["dynamic_groups"])
+        if has_audience:
             scheduled_at = campaign_payload.get("scheduled_at")
             if scheduled_at and scheduled_at > now:
                 campaign_payload["status"] = "scheduled"
@@ -91,11 +96,11 @@ async def create_campaign(
         campaign_id = str(result.inserted_id)
         campaign_dict["id"] = campaign_id
 
-        if campaign_payload["recipients"]:
+        if has_audience and campaign_payload["status"] == "queued":
             background_tasks.add_task(
                 prepare_campaign_priority_dispatch,
                 campaign_id,
-                campaign_payload["status"] == "queued",
+                True,
             )
         
         return campaign_dict

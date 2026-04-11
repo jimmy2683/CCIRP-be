@@ -17,3 +17,17 @@ class GroupDB(BaseModel):
 
     class Config:
         populate_by_name = True
+
+
+class DynamicGroupPreferenceDB(BaseModel):
+    id: Optional[str] = Field(default=None, alias="_id")
+    created_by: str
+    tag: str
+    tag_key: str
+    top_k: int
+    min_interactions: int = 1
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    class Config:
+        populate_by_name = True

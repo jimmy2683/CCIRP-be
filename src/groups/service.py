@@ -1,16 +1,26 @@
 import csv
 import io
+import math
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 from bson import ObjectId
 from fastapi import HTTPException
 from fastapi import UploadFile
 
 from src.database import get_database
-from src.groups.models import GroupDB
-from src.groups.schemas import StaticGroupCreate, StaticGroupUpdate
+from src.groups.models import DynamicGroupPreferenceDB, GroupDB
+from src.groups.schemas import (
+    DynamicGroupPreferenceUpsert,
+    DynamicGroupResolveRequest,
+    StaticGroupCreate,
+    StaticGroupUpdate,
+)
+
+
+_dynamic_group_indexes_ready = False
 
 
 def _dedupe_strings(values: Iterable[str]) -> List[str]:
@@ -23,6 +33,15 @@ def _dedupe_strings(values: Iterable[str]) -> List[str]:
         seen.add(clean_value)
         deduped.append(clean_value)
     return deduped
+
+
+def _normalize_tag_key(tag: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(tag).strip().lower()).strip("_")
+    return normalized or "untagged"
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(value, upper))
 
 
 def _group_response(group: dict) -> dict:
@@ -40,6 +59,287 @@ def _normalized_full_name(first_name: str | None = None, last_name: str | None =
         for part in [str(first_name or "").strip(), str(last_name or "").strip()]
         if part and str(part).strip()
     ).strip()
+
+
+def _display_name(recipient: dict) -> str:
+    full_name = " ".join(
+        part.strip()
+        for part in [str(recipient.get("first_name") or "").strip(), str(recipient.get("last_name") or "").strip()]
+        if part and part.strip()
+    ).strip()
+    return full_name or str(recipient.get("email") or "").strip()
+
+
+def _days_since(reference: Optional[datetime], now: datetime) -> Optional[float]:
+    if not reference:
+        return None
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    return max((now - reference).total_seconds() / 86400, 0.0)
+
+
+async def _ensure_dynamic_group_indexes(db) -> None:
+    global _dynamic_group_indexes_ready
+    if _dynamic_group_indexes_ready:
+        return
+
+    await db["dynamic_group_preferences"].create_index(
+        [("created_by", 1), ("tag_key", 1)],
+        unique=True,
+        name="dynamic_group_preference_unique",
+    )
+    _dynamic_group_indexes_ready = True
+
+
+def _dynamic_group_preference_response(document: dict) -> dict:
+    document["id"] = str(document["_id"])
+    return document
+
+
+def _calculate_dynamic_tag_score(
+    *,
+    recipient: dict,
+    tag_key: str,
+    tag_label: str,
+    tag_stats: Optional[dict],
+    min_interactions: int,
+) -> dict:
+    now = datetime.now(timezone.utc)
+    engagement = recipient.get("engagement") or {}
+    interaction_counts = engagement.get("tag_interaction_counts") or {}
+    tag_scores = engagement.get("tag_scores") or {}
+
+    base_interactions = int(interaction_counts.get(tag_key, 0) or 0)
+    base_tag_score = float(tag_scores.get(tag_key, 0) or 0)
+    stats = tag_stats or {}
+    unique_open_count = int(stats.get("unique_open_count", 0) or 0)
+    unique_click_count = int(stats.get("unique_click_count", 0) or 0)
+    open_count = int(stats.get("open_count", 0) or 0)
+    click_count = int(stats.get("click_count", 0) or 0)
+    delivery_count = int(stats.get("delivery_count", 0) or 0)
+    delivery_failure_count = int(stats.get("delivery_failure_count", 0) or 0)
+    campaign_touchpoints = int(stats.get("campaign_touchpoints", 0) or 0)
+
+    interaction_count = max(base_interactions, unique_open_count + unique_click_count)
+    last_open_at = stats.get("last_open_at") or engagement.get("last_open_at")
+    last_click_at = stats.get("last_click_at") or engagement.get("last_click_at")
+    most_recent_touch = max([value for value in [last_open_at, last_click_at] if value], default=None)
+    recency_days = _days_since(most_recent_touch, now)
+
+    tag_score_points = min(math.log1p(base_tag_score) / math.log1p(40), 1.0) * 38
+    interaction_points = min(math.log1p(interaction_count) / math.log1p(max(min_interactions + 8, 9)), 1.0) * 18
+    open_points = min(math.log1p(open_count + unique_open_count) / math.log1p(20), 1.0) * 12
+    click_points = min(math.log1p(click_count + (unique_click_count * 2)) / math.log1p(18), 1.0) * 18
+    relationship_points = min(math.log1p(campaign_touchpoints) / math.log1p(12), 1.0) * 8
+
+    if recency_days is None:
+        recency_points = 0.0
+    elif recency_days <= 3:
+        recency_points = 12.0
+    elif recency_days <= 7:
+        recency_points = 9.0
+    elif recency_days <= 14:
+        recency_points = 6.0
+    elif recency_days <= 30:
+        recency_points = 3.0
+    else:
+        recency_points = 0.0
+
+    total_delivery_attempts = delivery_count + delivery_failure_count
+    if total_delivery_attempts > 0:
+        reliability_points = (delivery_count / total_delivery_attempts) * 6
+    else:
+        reliability_points = 3.0
+
+    status_points = 4.0 if str(recipient.get("status", "active")).lower() == "active" else -20.0
+    consent_flags = recipient.get("consent_flags") or {}
+    consent_points = 3.0 if consent_flags.get("email", True) else -10.0
+
+    score = tag_score_points + interaction_points + open_points + click_points
+    score += relationship_points + recency_points + reliability_points + status_points + consent_points
+    score = _clamp(score, 0.0, 100.0)
+
+    return {
+        "tag": tag_label,
+        "tag_key": tag_key,
+        "dynamic_score": round(score, 2),
+        "tag_score": round(base_tag_score, 2),
+        "interaction_count": interaction_count,
+        "unique_open_count": unique_open_count,
+        "unique_click_count": unique_click_count,
+        "last_open_at": last_open_at,
+        "last_click_at": last_click_at,
+        "campaign_touchpoints": campaign_touchpoints,
+        "eligible": interaction_count >= min_interactions,
+    }
+
+
+async def list_dynamic_group_preferences(user_id: str) -> list[dict]:
+    db = get_database()
+    await _ensure_dynamic_group_indexes(db)
+    prefs = await db["dynamic_group_preferences"].find({"created_by": user_id}).sort("tag", 1).to_list(length=500)
+    return [_dynamic_group_preference_response(pref) for pref in prefs]
+
+
+async def upsert_dynamic_group_preference(user_id: str, payload: DynamicGroupPreferenceUpsert) -> dict:
+    db = get_database()
+    await _ensure_dynamic_group_indexes(db)
+    tag = payload.tag.strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="Tag is required")
+
+    now = datetime.now(timezone.utc)
+    preference = DynamicGroupPreferenceDB(
+        created_by=user_id,
+        tag=tag,
+        tag_key=_normalize_tag_key(tag),
+        top_k=payload.top_k,
+        min_interactions=payload.min_interactions,
+        updated_at=now,
+    )
+    preference_dict = preference.model_dump(by_alias=True, exclude={"id"})
+    preference_dict["updated_at"] = now
+
+    await db["dynamic_group_preferences"].update_one(
+        {"created_by": user_id, "tag_key": preference.tag_key},
+        {
+            "$set": {
+                "tag": preference.tag,
+                "tag_key": preference.tag_key,
+                "top_k": preference.top_k,
+                "min_interactions": preference.min_interactions,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_by": user_id,
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+    stored = await db["dynamic_group_preferences"].find_one({"created_by": user_id, "tag_key": preference.tag_key})
+    return _dynamic_group_preference_response(stored)
+
+
+async def _get_dynamic_group_preference(user_id: str, tag_key: str) -> Optional[dict]:
+    db = get_database()
+    await _ensure_dynamic_group_indexes(db)
+    return await db["dynamic_group_preferences"].find_one({"created_by": user_id, "tag_key": tag_key})
+
+
+async def resolve_dynamic_group_request(user_id: str, request: DynamicGroupResolveRequest) -> dict:
+    db = get_database()
+    tag = request.tag.strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="Tag is required for dynamic groups")
+
+    tag_key = _normalize_tag_key(tag)
+    saved_preference = await _get_dynamic_group_preference(user_id, tag_key)
+    used_saved_top_k = request.top_k is None and saved_preference is not None
+
+    top_k = request.top_k if request.top_k is not None else (saved_preference.get("top_k") if saved_preference else None)
+    if top_k is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Top K is required for tag '{tag}' because no saved dynamic-group preference exists yet",
+        )
+
+    min_interactions = (
+        request.min_interactions
+        if request.min_interactions is not None
+        else (saved_preference.get("min_interactions") if saved_preference else 1)
+    )
+
+    recipients = await db["recipients"].find({"user_id": user_id}).to_list(length=5000)
+    recipient_stats_rows = await db["campaign_recipient_stats"].aggregate([
+        {"$match": {"owner_user_id": user_id, "campaign_tag_keys": tag_key}},
+        {"$group": {
+            "_id": "$recipient_email",
+            "campaign_touchpoints": {"$sum": 1},
+            "delivery_count": {"$sum": {"$ifNull": ["$delivery_count", 0]}},
+            "delivery_failure_count": {"$sum": {"$ifNull": ["$delivery_failure_count", 0]}},
+            "open_count": {"$sum": {"$ifNull": ["$open_count", 0]}},
+            "click_count": {"$sum": {"$ifNull": ["$click_count", 0]}},
+            "unique_open_count": {"$sum": {"$ifNull": ["$unique_open_count", 0]}},
+            "unique_click_count": {"$sum": {"$ifNull": ["$unique_click_count", 0]}},
+            "last_open_at": {"$max": "$last_open_at"},
+            "last_click_at": {"$max": "$last_click_at"},
+        }},
+    ]).to_list(length=5000)
+    recipient_stats_map = {str(row["_id"]): row for row in recipient_stats_rows}
+
+    scored_recipients = []
+    for recipient in recipients:
+        score_info = _calculate_dynamic_tag_score(
+            recipient=recipient,
+            tag_key=tag_key,
+            tag_label=tag,
+            tag_stats=recipient_stats_map.get(recipient["email"]),
+            min_interactions=min_interactions,
+        )
+        if not score_info["eligible"]:
+            continue
+        scored_recipients.append({
+            "id": str(recipient["_id"]),
+            "email": recipient["email"],
+            "name": _display_name(recipient),
+            "dynamic_score": score_info["dynamic_score"],
+            "tag_score": score_info["tag_score"],
+            "interaction_count": score_info["interaction_count"],
+            "unique_open_count": score_info["unique_open_count"],
+            "unique_click_count": score_info["unique_click_count"],
+            "last_open_at": score_info["last_open_at"],
+            "last_click_at": score_info["last_click_at"],
+        })
+
+    scored_recipients.sort(
+        key=lambda recipient: (
+            -recipient["dynamic_score"],
+            -recipient["interaction_count"],
+            recipient["email"].lower(),
+        )
+    )
+    selected_recipients = scored_recipients[:top_k]
+
+    return {
+        "tag": tag,
+        "tag_key": tag_key,
+        "top_k": top_k,
+        "min_interactions": min_interactions,
+        "used_saved_top_k": used_saved_top_k,
+        "total_eligible": len(scored_recipients),
+        "recipients": selected_recipients,
+    }
+
+
+async def resolve_dynamic_group_payload(user_id: str, requests: list[DynamicGroupResolveRequest]) -> list[dict]:
+    resolved_groups = []
+    for request in requests:
+        resolved_groups.append(await resolve_dynamic_group_request(user_id, request))
+    return resolved_groups
+
+
+async def resolve_dynamic_group_emails(user_id: str, requests: list[DynamicGroupResolveRequest]) -> tuple[list[str], list[dict]]:
+    resolved_groups = await resolve_dynamic_group_payload(user_id, requests)
+
+    emails = _dedupe_strings(
+        recipient["email"]
+        for group in resolved_groups
+        for recipient in group.get("recipients", [])
+    )
+
+    for original_request, resolved_group in zip(requests, resolved_groups):
+        if original_request.top_k is not None:
+            await upsert_dynamic_group_preference(
+                user_id,
+                DynamicGroupPreferenceUpsert(
+                    tag=resolved_group["tag"],
+                    top_k=resolved_group["top_k"],
+                    min_interactions=resolved_group["min_interactions"],
+                ),
+            )
+
+    return emails, resolved_groups
 
 
 async def _resolve_recipients(user_id: str, recipient_ids: Iterable[str]) -> tuple[List[str], List[str]]:

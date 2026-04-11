@@ -6,8 +6,8 @@ from bson import ObjectId
 from src.communication.schemas import CampaignCreate, CampaignResponse
 from src.communication.models import CampaignDB
 from src.communication.service import (
-    dispatch_campaign_by_id,
     normalize_campaign_channels,
+    prepare_campaign_priority_dispatch,
 )
 from src.groups.service import resolve_static_group_emails
 from src.auth.dependencies import get_current_active_user
@@ -91,8 +91,12 @@ async def create_campaign(
         campaign_id = str(result.inserted_id)
         campaign_dict["id"] = campaign_id
 
-        if campaign_payload["recipients"] and campaign_payload["status"] == "queued":
-            background_tasks.add_task(dispatch_campaign_by_id, campaign_id)
+        if campaign_payload["recipients"]:
+            background_tasks.add_task(
+                prepare_campaign_priority_dispatch,
+                campaign_id,
+                campaign_payload["status"] == "queued",
+            )
         
         return campaign_dict
     except Exception as e:

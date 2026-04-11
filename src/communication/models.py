@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
@@ -14,6 +14,12 @@ class CampaignDB(BaseModel):
     merge_data: Dict[str, str] = Field(default_factory=dict)
     status: str = "draft"  # draft, queued, dispatching, scheduled, sent, partially_sent, failed
     scheduled_at: Optional[datetime] = None
+    queue_summary: Optional[Dict[str, Any]] = None
+    delivery_summary: Optional[Dict[str, Any]] = None
+    priority_algorithm_version: Optional[str] = None
+    queue_prepared_at: Optional[datetime] = None
+    dispatch_started_at: Optional[datetime] = None
+    dispatch_completed_at: Optional[datetime] = None
     created_by: str  # User ID
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 class CampaignCreate(BaseModel):
@@ -25,6 +25,12 @@ class CampaignResponse(BaseModel):
     recipients: List[str]
     merge_data: Dict[str, str] = {}
     scheduled_at: Optional[datetime] = None
+    queue_summary: Optional[Dict[str, Any]] = None
+    delivery_summary: Optional[Dict[str, Any]] = None
+    priority_algorithm_version: Optional[str] = None
+    queue_prepared_at: Optional[datetime] = None
+    dispatch_started_at: Optional[datetime] = None
+    dispatch_completed_at: Optional[datetime] = None
     created_by: str
     created_at: datetime
 

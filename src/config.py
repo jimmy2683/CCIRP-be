@@ -58,6 +58,11 @@ class Settings(BaseSettings):
 
     # Background scheduler settings
     CAMPAIGN_SCHEDULER_INTERVAL_SECONDS: int = 15
+    CAMPAIGN_QUEUE_BATCH_SIZE_CRITICAL: int = 25
+    CAMPAIGN_QUEUE_BATCH_SIZE_HIGH: int = 20
+    CAMPAIGN_QUEUE_BATCH_SIZE_MEDIUM: int = 15
+    CAMPAIGN_QUEUE_BATCH_SIZE_LOW: int = 10
+    CAMPAIGN_QUEUE_STALE_SECONDS: int = 300
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

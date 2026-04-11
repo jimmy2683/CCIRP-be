@@ -1,8 +1,12 @@
+import csv
+import io
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Iterable, List
 
 from bson import ObjectId
 from fastapi import HTTPException
+from fastapi import UploadFile
 
 from src.database import get_database
 from src.groups.models import GroupDB
@@ -28,6 +32,14 @@ def _group_response(group: dict) -> dict:
     group.setdefault("recipient_ids", [])
     group.setdefault("recipient_emails", [])
     return group
+
+
+def _normalized_full_name(first_name: str | None = None, last_name: str | None = None) -> str:
+    return " ".join(
+        part.strip().lower()
+        for part in [str(first_name or "").strip(), str(last_name or "").strip()]
+        if part and str(part).strip()
+    ).strip()
 
 
 async def _resolve_recipients(user_id: str, recipient_ids: Iterable[str]) -> tuple[List[str], List[str]]:
@@ -228,3 +240,88 @@ async def resolve_static_group_emails(user_id: str, group_ids: Iterable[str]) ->
     for group_id in group_ids:
         emails.extend(groups_by_id[group_id].get("recipient_emails", []))
     return _dedupe_strings(emails)
+
+
+async def import_static_group_csv(user_id: str, file: UploadFile) -> dict:
+    db = get_database()
+    content = await file.read()
+
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be valid UTF-8 encoded CSV")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV must include headers. Supported columns: email, full_name, first_name, last_name",
+        )
+
+    recipients = await db["recipients"].find(
+        {"user_id": user_id},
+        {"email": 1, "first_name": 1, "last_name": 1},
+    ).to_list(length=5000)
+
+    recipients_by_email = {
+        str(recipient.get("email", "")).strip().lower(): recipient
+        for recipient in recipients
+        if str(recipient.get("email", "")).strip()
+    }
+    recipients_by_name = defaultdict(list)
+    for recipient in recipients:
+        normalized_name = _normalized_full_name(recipient.get("first_name"), recipient.get("last_name"))
+        if normalized_name:
+            recipients_by_name[normalized_name].append(recipient)
+
+    matched_ids = []
+    matched_emails = []
+    unmatched_rows = []
+    seen_ids = set()
+    skipped_count = 0
+
+    for line_number, row in enumerate(reader, start=2):
+        cleaned_row = {str(key or "").strip().lower(): str(value or "").strip() for key, value in row.items()}
+        email = cleaned_row.get("email", "").lower()
+        full_name = cleaned_row.get("full_name", "")
+        first_name = cleaned_row.get("first_name", "")
+        last_name = cleaned_row.get("last_name", "")
+
+        matched_recipient = None
+        if email:
+            matched_recipient = recipients_by_email.get(email)
+        else:
+            normalized_name = _normalized_full_name(
+                full_name or first_name,
+                "" if full_name else last_name,
+            )
+            possible_matches = recipients_by_name.get(normalized_name, [])
+            if len(possible_matches) == 1:
+                matched_recipient = possible_matches[0]
+            elif len(possible_matches) > 1:
+                unmatched_rows.append(f"Line {line_number}: multiple recipients matched '{normalized_name}'")
+                skipped_count += 1
+                continue
+
+        if not matched_recipient:
+            descriptor = email or full_name or _normalized_full_name(first_name, last_name) or "empty row"
+            unmatched_rows.append(f"Line {line_number}: no recipient matched '{descriptor}'")
+            skipped_count += 1
+            continue
+
+        recipient_id = str(matched_recipient["_id"])
+        if recipient_id in seen_ids:
+            skipped_count += 1
+            continue
+
+        seen_ids.add(recipient_id)
+        matched_ids.append(recipient_id)
+        matched_emails.append(matched_recipient["email"])
+
+    return {
+        "matched_recipient_ids": matched_ids,
+        "matched_recipient_emails": matched_emails,
+        "matched_count": len(matched_ids),
+        "skipped_count": skipped_count,
+        "unmatched_rows": unmatched_rows,
+    }

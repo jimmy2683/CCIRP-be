@@ -1,12 +1,18 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 
 from src.auth.dependencies import get_current_active_user
-from src.groups.schemas import StaticGroupCreate, StaticGroupResponse, StaticGroupUpdate
+from src.groups.schemas import (
+    StaticGroupCreate,
+    StaticGroupCsvImportResponse,
+    StaticGroupResponse,
+    StaticGroupUpdate,
+)
 from src.groups.service import (
     create_static_group,
     delete_static_group,
+    import_static_group_csv,
     get_static_group,
     list_static_groups,
     update_static_group,
@@ -27,6 +33,17 @@ async def create_static_group_endpoint(
 @router.get("/", response_model=List[StaticGroupResponse])
 async def list_static_groups_endpoint(current_user: dict = Depends(get_current_active_user)):
     return await list_static_groups(current_user["id"])
+
+
+@router.post("/import-csv", response_model=StaticGroupCsvImportResponse)
+async def import_static_group_csv_endpoint(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_active_user),
+):
+    if not file.filename or not file.filename.endswith(".csv"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+    return await import_static_group_csv(current_user["id"], file)
 
 
 @router.get("/{group_id}", response_model=StaticGroupResponse)

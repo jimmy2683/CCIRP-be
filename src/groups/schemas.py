@@ -32,3 +32,11 @@ class StaticGroupResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class StaticGroupCsvImportResponse(BaseModel):
+    matched_recipient_ids: List[str] = Field(default_factory=list)
+    matched_recipient_emails: List[str] = Field(default_factory=list)
+    matched_count: int = 0
+    skipped_count: int = 0
+    unmatched_rows: List[str] = Field(default_factory=list)

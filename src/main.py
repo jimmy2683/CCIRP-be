@@ -1,14 +1,24 @@
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from src.database import connect_to_mongo, close_mongo_connection
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
+from src.communication.service import run_campaign_scheduler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Connect to MongoDB
     await connect_to_mongo()
+    scheduler_stop_event = asyncio.Event()
+    scheduler_task = asyncio.create_task(run_campaign_scheduler(scheduler_stop_event))
     yield
+    scheduler_stop_event.set()
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
     # Shutdown: Close MongoDB connection
     await close_mongo_connection()
 

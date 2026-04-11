@@ -1,14 +1,13 @@
 from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import EmailStr
 from jose import jwt
-import builtins
 
 from src.auth.security import verify_password, get_password_hash, create_access_token, create_refresh_token
 from src.auth.dependencies import get_current_active_user
-from src.users.schemas import UserCreate, UserResponse, Token
+from src.users.schemas import ChangePasswordRequest, UserCreate, UserProfileUpdate, UserResponse, Token
 from src.users.models import UserDB
+from src.users.service import UserService
 from src.database import get_database
 from src.config import settings
 
@@ -31,13 +30,21 @@ async def register_user(user_in: UserCreate):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password must be at least 6 characters"
         )
+
+    phone = str(user_in.phone).strip()
+    if not phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Phone number is required"
+        )
         
     # Hash password and save
     hashed_password = get_password_hash(user_in.password)
     user_db = UserDB(
         email=user_in.email,
         hashed_password=hashed_password,
-        full_name=user_in.full_name
+        full_name=user_in.full_name,
+        phone=phone,
     )
     
     user_dict = user_db.model_dump(by_alias=True, exclude_none=True)
@@ -45,6 +52,8 @@ async def register_user(user_in: UserCreate):
     
     # Format for response
     user_dict["id"] = str(result.inserted_id)
+    user_dict["_id"] = result.inserted_id
+    await UserService.sync_user_recipient(user_dict)
     return user_dict
 
 @router.post("/login", response_model=Token)
@@ -90,7 +99,7 @@ async def refresh_access_token(token_data: dict):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token"
             )
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate refresh token"
@@ -121,3 +130,49 @@ async def refresh_access_token(token_data: dict):
 @router.get("/me", response_model=UserResponse)
 async def read_users_me(current_user: dict = Depends(get_current_active_user)):
     return current_user
+
+@router.put("/me", response_model=UserResponse)
+async def update_current_user_profile(
+    profile_data: UserProfileUpdate,
+    current_user: dict = Depends(get_current_active_user),
+):
+    update_data = {}
+    if profile_data.full_name is not None:
+        full_name = profile_data.full_name.strip()
+        if not full_name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Full name is required")
+        update_data["full_name"] = full_name
+
+    if profile_data.phone is not None:
+        phone = profile_data.phone.strip()
+        if not phone:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number is required")
+        update_data["phone"] = phone
+
+    if not update_data:
+        return current_user
+
+    db = get_database()
+    await db["users"].update_one({"_id": current_user["_id"]}, {"$set": update_data})
+    updated_user = await db["users"].find_one({"_id": current_user["_id"]})
+    updated_user["id"] = str(updated_user["_id"])
+    await UserService.sync_user_recipient(updated_user)
+    return updated_user
+
+@router.post("/change-password")
+async def change_password(
+    password_data: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_active_user),
+):
+    if len(password_data.new_password) < 6:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be at least 6 characters")
+
+    if not verify_password(password_data.current_password, current_user["hashed_password"]):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+
+    db = get_database()
+    await db["users"].update_one(
+        {"_id": current_user["_id"]},
+        {"$set": {"hashed_password": get_password_hash(password_data.new_password)}},
+    )
+    return {"message": "Password updated successfully"}

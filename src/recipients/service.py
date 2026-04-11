@@ -29,6 +29,11 @@ async def import_csv(user_id: str, file: UploadFile) -> dict:
         email = cleaned_row.get("email", "").strip()
         if not email:
             continue
+        phone = cleaned_row.get("phone", "").strip()
+        if not phone:
+            skipped_count += 1
+            errors.append(f"Skipped {email}: phone number is required")
+            continue
             
         existing = await db.recipients.find_one({"user_id": user_id, "email": email})
         if existing:
@@ -40,9 +45,9 @@ async def import_csv(user_id: str, file: UploadFile) -> dict:
         recipient_dict = {
             "user_id": user_id,
             "email": email,
+            "phone": phone,
             "first_name": cleaned_row.get("first_name", email.split('@')[0]).strip(),
             "last_name": cleaned_row.get("last_name", "").strip() or None,
-            "phone": cleaned_row.get("phone", "").strip() or None,
             "tags": tags,
             "attributes": {},
             "consent_flags": {"email": True, "sms": False, "whatsapp": False},
@@ -64,6 +69,9 @@ async def create_recipient(user_id: str, recipient_data: RecipientCreate) -> Rec
     existing = await collection.find_one({"user_id": user_id, "email": recipient_data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Recipient with this email already exists")
+
+    if not str(recipient_data.phone).strip():
+        raise HTTPException(status_code=400, detail="Phone number is required")
 
     recipient_dict = recipient_data.model_dump(exclude_unset=True)
     recipient_dict["user_id"] = user_id
@@ -115,6 +123,8 @@ async def update_recipient(user_id: str, recipient_id: str, update_data: Recipie
         return RecipientDB(**existing)
 
     update_dict["updated_at"] = datetime.now(timezone.utc)
+    if "phone" in update_dict and not str(update_dict["phone"]).strip():
+        raise HTTPException(status_code=400, detail="Phone number is required")
     
     if "email" in update_dict:
         email_check = await db.recipients.find_one({

@@ -1,15 +1,14 @@
-import re
 from datetime import datetime, timezone
 from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from bson import ObjectId
 
-from src.config import settings
-from src.communication.tracking_service import ensure_recipient_stats, record_delivery_event
-from src.communication.tracking_utils import inject_tracking
 from src.communication.schemas import CampaignCreate, CampaignResponse
 from src.communication.models import CampaignDB
-from src.communication.email_service import EmailService
+from src.communication.service import (
+    dispatch_campaign_by_id,
+    normalize_campaign_channels,
+)
 from src.groups.service import resolve_static_group_emails
 from src.auth.dependencies import get_current_active_user
 from src.database import get_database
@@ -46,115 +45,6 @@ def dedupe_emails(emails: List[str]) -> List[str]:
         deduped_emails.append(clean_email)
     return deduped_emails
 
-
-def render_template(body_html: str, merge_data: dict, recipient_email: str, recipient_data: dict) -> str:
-    """Replace all {{field}} merge fields in the template body."""
-    rendered = body_html
-    
-    # Start with campaign-level merge data (organization_name, event_name, etc.)
-    all_fields = dict(merge_data)
-    
-    # Add/override with recipient-specific fields
-    all_fields["email"] = recipient_email
-    all_fields["recipient_email"] = recipient_email
-    full_name = recipient_data.get("full_name", recipient_email.split("@")[0])
-    all_fields["name"] = full_name
-    all_fields["full_name"] = full_name
-    all_fields["recipient_name"] = full_name
-    all_fields["first_name"] = full_name.split(" ")[0] if full_name else ""
-    
-    # Replace all {{field}} patterns
-    for key, value in all_fields.items():
-        rendered = re.sub(r"\{\{\s*" + re.escape(key) + r"\s*\}\}", str(value), rendered, flags=re.IGNORECASE)
-    
-    return rendered
-
-
-async def dispatch_campaign_emails(campaign_id: str, owner_user_id: str, template: dict, recipients: List[str], subject: str, merge_data: dict):
-    """Background task to send emails to all recipients and update campaign status."""
-    db = get_database()
-    body_html = template.get("body_html", "")
-    
-    # Look up recipient user data for merge fields
-    recipient_data_map = {}
-    if recipients:
-        users_cursor = db["users"].find({"email": {"$in": recipients}})
-        users_list = await users_cursor.to_list(length=1000)
-        for u in users_list:
-            recipient_data_map[u["email"]] = u
-
-        # Auto-add missing recipients to Audience Management
-        existing_recips_cursor = db["recipients"].find({"user_id": owner_user_id, "email": {"$in": recipients}})
-        existing_recips_list = await existing_recips_cursor.to_list(length=1000)
-        existing_emails = {r["email"] for r in existing_recips_list}
-        
-        new_recipients = []
-        now = datetime.now(timezone.utc)
-        for email in recipients:
-            if email not in existing_emails:
-                user_data = recipient_data_map.get(email, {})
-                full_name = user_data.get("full_name", email.split("@")[0])
-                first_name = full_name.split(" ")[0] if full_name else email.split("@")[0]
-                new_recipients.append({
-                    "user_id": owner_user_id,
-                    "email": email,
-                    "first_name": first_name,
-                    "last_name": None,
-                    "phone": None,
-                    "tags": ["auto-added"],
-                    "attributes": {},
-                    "consent_flags": {"email": True, "sms": False, "whatsapp": False},
-                    "status": "active",
-                    "engagement": {
-                        "open_count_total": 0, "click_count_total": 0,
-                        "unique_open_campaigns": [], "unique_click_campaigns": [],
-                        "clicked_domains": [], "tag_scores": {}, "topic_scores": {},
-                        "last_open_at": None, "last_click_at": None
-                    },
-                    "created_at": now, "updated_at": now
-                })
-        if new_recipients:
-            await db["recipients"].insert_many(new_recipients)
-
-    failed = []
-    for email in recipients:
-        await ensure_recipient_stats(
-            db=db,
-            campaign_id=campaign_id,
-            recipient_email=email,
-            owner_user_id=owner_user_id,
-        )
-        user_data = recipient_data_map.get(email, {})
-        rendered_body = render_template(body_html, merge_data, email, user_data)
-        tracked_body = inject_tracking(rendered_body, campaign_id, email, owner_user_id, settings.TRACKING_BASE_URL)
-        success, msg = await EmailService.send_email([email], subject, tracked_body)
-        await record_delivery_event(
-            db=db,
-            campaign_id=campaign_id,
-            recipient_email=email,
-            owner_user_id=owner_user_id,
-            delivered=success,
-            error_message=None if success else msg,
-        )
-        if not success:
-            print(f"Failed to send to {email}: {msg}")
-            failed.append(email)
-    
-    # Update campaign status
-    new_status = "sent" if not failed else ("partially_sent" if len(failed) < len(recipients) else "failed")
-    try:
-        await db["campaigns"].update_one(
-            {"_id": ObjectId(campaign_id)},
-            {"$set": {"status": new_status}}
-        )
-    except Exception:
-        await db["campaigns"].update_one(
-            {"_id": campaign_id},
-            {"$set": {"status": new_status}}
-        )
-    print(f"Campaign {campaign_id} dispatch complete. Status: {new_status}. Failed: {len(failed)}/{len(recipients)}")
-
-
 @router.post("/", response_model=CampaignResponse, status_code=status.HTTP_201_CREATED)
 async def create_campaign(
     campaign_in: CampaignCreate,
@@ -174,6 +64,7 @@ async def create_campaign(
             raise HTTPException(status_code=404, detail="Template not found")
 
         campaign_payload = campaign_in.model_dump()
+        campaign_payload["channels"] = normalize_campaign_channels(campaign_payload.get("channels", []))
         campaign_payload["tags"] = normalize_campaign_tags(campaign_payload.get("tags", []))
         group_emails = await resolve_static_group_emails(
             current_user["id"],
@@ -182,6 +73,13 @@ async def create_campaign(
         campaign_payload["recipients"] = dedupe_emails(
             [*campaign_payload.get("recipients", []), *group_emails]
         )
+        now = datetime.now(timezone.utc)
+        if campaign_payload["recipients"]:
+            scheduled_at = campaign_payload.get("scheduled_at")
+            if scheduled_at and scheduled_at > now:
+                campaign_payload["status"] = "scheduled"
+            else:
+                campaign_payload["status"] = "queued"
 
         campaign_db = CampaignDB(
             **campaign_payload,
@@ -193,18 +91,8 @@ async def create_campaign(
         campaign_id = str(result.inserted_id)
         campaign_dict["id"] = campaign_id
 
-        # Dispatch emails in background
-        subject = campaign_in.subject or template.get("subject", "No Subject")
-        if campaign_payload["recipients"]:
-            background_tasks.add_task(
-                dispatch_campaign_emails,
-                campaign_id,
-                current_user["id"],
-                template,
-                campaign_payload["recipients"],
-                subject,
-                campaign_payload.get("merge_data") or {},
-            )
+        if campaign_payload["recipients"] and campaign_payload["status"] == "queued":
+            background_tasks.add_task(dispatch_campaign_by_id, campaign_id)
         
         return campaign_dict
     except Exception as e:
@@ -223,6 +111,7 @@ async def list_campaigns(current_user: dict = Depends(get_current_active_user)):
     campaigns = await cursor.to_list(length=100)
     
     for camp in campaigns:
+        camp.setdefault("channels", ["email"])
         camp.setdefault("tags", [])
         camp.setdefault("group_ids", [])
         camp["id"] = str(camp["_id"])
@@ -260,6 +149,7 @@ async def get_campaign(campaign_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=403, detail="Not authorized to view this campaign")
 
     campaign.setdefault("tags", [])
+    campaign.setdefault("channels", ["email"])
     campaign.setdefault("group_ids", [])
     campaign["id"] = str(campaign["_id"])
     return campaign
@@ -276,7 +166,7 @@ async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict =
     # Verify campaign exists and belongs to user
     try:
         camp_query = {"_id": ObjectId(campaign_id)}
-    except:
+    except Exception:
         camp_query = {"_id": campaign_id}
         
     campaign = await db["campaigns"].find_one(camp_query)
@@ -310,7 +200,7 @@ async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict =
         "delivery_status": "failed"
     })
     
-    sent_count = len(campaign.get("recipients", []))
+    sent_count = len(campaign.get("recipients", [])) * max(len(campaign.get("channels", ["email"])), 1)
     
     metrics = {
         "total_sent": sent_count,
@@ -345,7 +235,9 @@ async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict =
     timeline_results = await db["email_events"].aggregate(timeline_pipeline).to_list(length=72)
     
     # Recipient Activity
-    recipients_cursor = db["campaign_recipient_stats"].find({"campaign_id": campaign_id}).limit(100)
+    recipients_cursor = db["campaign_recipient_stats"].find(
+        {"campaign_id": campaign_id, "channel": "email"}
+    ).limit(100)
     recipients_list = await recipients_cursor.to_list(length=100)
     
     recipient_emails = [r["recipient_email"] for r in recipients_list]

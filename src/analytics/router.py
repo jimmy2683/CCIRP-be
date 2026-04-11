@@ -8,6 +8,8 @@ from src.database import get_database
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
+MIN_AWARE_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
+
 @router.get("/overview", response_model=Dict[str, Any])
 async def get_analytics_overview(current_user: dict = Depends(get_current_active_user)):
     db = get_database()
@@ -17,7 +19,10 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
     total_campaigns = await db["campaigns"].count_documents({"created_by": user_id})
     
     # 2. Global Metrics from campaign_recipient_stats
-    user_campaigns_cursor = db["campaigns"].find({"created_by": user_id}, {"_id": 1, "recipients": 1, "created_at": 1})
+    user_campaigns_cursor = db["campaigns"].find(
+        {"created_by": user_id},
+        {"_id": 1, "recipients": 1, "channels": 1, "created_at": 1, "name": 1, "status": 1},
+    )
     user_campaigns = await user_campaigns_cursor.to_list(length=1000)
     user_campaign_ids = [str(c["_id"]) for c in user_campaigns]
     
@@ -42,7 +47,10 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
         "delivery_status": "failed"
     })
     
-    total_sent = sum(len(c.get("recipients", [])) for c in user_campaigns)
+    total_sent = sum(
+        len(c.get("recipients", [])) * max(len(c.get("channels", ["email"])), 1)
+        for c in user_campaigns
+    )
     
     # 3. Trend Data (Last 30 Days)
     thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
@@ -52,7 +60,9 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
     for camp in user_campaigns:
         if "created_at" in camp and camp["created_at"] >= thirty_days_ago:
             date_str = camp["created_at"].strftime("%Y-%m-%d")
-            sent_by_date[date_str] = sent_by_date.get(date_str, 0) + len(camp.get("recipients", []))
+            sent_by_date[date_str] = sent_by_date.get(date_str, 0) + (
+                len(camp.get("recipients", [])) * max(len(camp.get("channels", ["email"])), 1)
+            )
             
     # Events from email_events
     event_pipeline = [
@@ -88,7 +98,11 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
         })
     
     # 4. Recent Campaign Performance
-    recent_campaigns = sorted(user_campaigns, key=lambda x: x.get("created_at", datetime.min), reverse=True)[:5]
+    recent_campaigns = sorted(
+        user_campaigns,
+        key=lambda x: x.get("created_at", MIN_AWARE_DATETIME),
+        reverse=True,
+    )[:5]
     
     performance = []
     for camp in recent_campaigns:
@@ -104,7 +118,7 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
         c_stats_list = await c_stats_cursor.to_list(length=1)
         c_stats = c_stats_list[0] if c_stats_list else {"opens": 0, "clicks": 0}
         
-        sent_count = len(camp.get("recipients", []))
+        sent_count = len(camp.get("recipients", [])) * max(len(camp.get("channels", ["email"])), 1)
         open_rate = round((c_stats["opens"] / sent_count * 100), 1) if sent_count > 0 else 0
         click_rate = round((c_stats["clicks"] / sent_count * 100), 1) if sent_count > 0 else 0
         
@@ -136,7 +150,7 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
     
     try:
         camp_query = {"_id": ObjectId(campaign_id)}
-    except:
+    except Exception:
         camp_query = {"_id": campaign_id}
         
     campaign = await db["campaigns"].find_one(camp_query)
@@ -169,7 +183,7 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
         "delivery_status": "failed"
     })
     
-    sent_count = len(campaign.get("recipients", []))
+    sent_count = len(campaign.get("recipients", [])) * max(len(campaign.get("channels", ["email"])), 1)
     
     metrics = {
         "total_sent": sent_count,
@@ -203,7 +217,7 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
     ]
     timeline_results = await db["email_events"].aggregate(timeline_pipeline).to_list(length=72)
     
-    recipients_cursor = db["campaign_recipient_stats"].find({"campaign_id": campaign_id}).limit(100)
+    recipients_cursor = db["campaign_recipient_stats"].find({"campaign_id": campaign_id, "channel": "email"}).limit(100)
     recipients_list = await recipients_cursor.to_list(length=100)
     
     recipient_emails = [r["recipient_email"] for r in recipients_list]

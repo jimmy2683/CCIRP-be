@@ -7,6 +7,7 @@ class UserDB(BaseModel):
     email: EmailStr
     hashed_password: str
     full_name: str
+    phone: Optional[str] = None
     role: str = "user"
     is_active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

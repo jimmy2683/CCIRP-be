@@ -7,11 +7,12 @@ class CampaignDB(BaseModel):
     name: str
     subject: str
     template_id: str
+    channels: List[str] = Field(default_factory=lambda: ["email"])
     tags: List[str] = Field(default_factory=list)
     group_ids: List[str] = Field(default_factory=list)
     recipients: List[str] = Field(default_factory=list)
     merge_data: Dict[str, str] = Field(default_factory=dict)
-    status: str = "draft"  # draft, scheduled, sent, partially_sent, failed
+    status: str = "draft"  # draft, queued, dispatching, scheduled, sent, partially_sent, failed
     scheduled_at: Optional[datetime] = None
     created_by: str  # User ID
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

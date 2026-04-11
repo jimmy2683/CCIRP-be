@@ -48,14 +48,16 @@ async def ensure_recipient_stats(
     campaign_id: str,
     recipient_email: str,
     owner_user_id: str,
+    channel: str = "email",
 ) -> None:
     now = datetime.now(timezone.utc)
     campaign_tags = await _get_campaign_tags(db, campaign_id)
     await db["campaign_recipient_stats"].update_one(
-        {"campaign_id": campaign_id, "recipient_email": recipient_email},
+        {"campaign_id": campaign_id, "recipient_email": recipient_email, "channel": channel},
         {
             "$setOnInsert": {
                 **_recipient_stats_defaults(now),
+                "channel": channel,
                 "delivery_status": "pending",
             },
             "$set": {
@@ -76,6 +78,7 @@ async def record_delivery_event(
     owner_user_id: str,
     delivered: bool,
     error_message: Optional[str] = None,
+    channel: str = "email",
 ) -> None:
     now = datetime.now(timezone.utc)
     event_type = "delivered" if delivered else "delivery_failed"
@@ -88,6 +91,7 @@ async def record_delivery_event(
             "recipient_email": recipient_email,
             "owner_user_id": owner_user_id,
             "campaign_tags": campaign_tags,
+            "channel": channel,
             "delivery_status": "delivered" if delivered else "failed",
             "error_message": error_message,
             "is_unique": True,
@@ -100,6 +104,7 @@ async def record_delivery_event(
         "$set": {
             "owner_user_id": owner_user_id,
             "campaign_tags": campaign_tags,
+            "channel": channel,
             "delivery_status": "delivered" if delivered else "failed",
             "updated_at": now,
         },
@@ -119,7 +124,7 @@ async def record_delivery_event(
         update_doc["$set"]["delivery_error"] = error_message or "Unknown delivery error"
 
     await db["campaign_recipient_stats"].update_one(
-        {"campaign_id": campaign_id, "recipient_email": recipient_email},
+        {"campaign_id": campaign_id, "recipient_email": recipient_email, "channel": channel},
         update_doc,
         upsert=True,
     )
@@ -156,6 +161,7 @@ async def record_engagement_event(
             "recipient_email": recipient_email,
             "owner_user_id": owner_user_id,
             "campaign_tags": campaign_tags,
+            "channel": "email",
             "link_url": link_url,
             "ip": ip,
             "user_agent": user_agent,
@@ -184,7 +190,7 @@ async def record_engagement_event(
             stats_inc["unique_click_count"] = 1
 
     await db["campaign_recipient_stats"].update_one(
-        {"campaign_id": campaign_id, "recipient_email": recipient_email},
+        {"campaign_id": campaign_id, "recipient_email": recipient_email, "channel": "email"},
         {
             "$setOnInsert": _recipient_stats_defaults(now),
             "$inc": stats_inc,

@@ -21,7 +21,7 @@ class EngagementStatsSchema(BaseModel):
 
 class RecipientCreate(BaseModel):
     email: EmailStr
-    phone: Optional[str] = None
+    phone: str
     first_name: str
     last_name: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None

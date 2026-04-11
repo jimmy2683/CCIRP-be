@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     RESEND_API_BASE_URL: str = "https://api.resend.com"
     RESEND_REPLY_TO: str = ""
 
+    # SMS / WhatsApp settings
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_SMS_FROM: str = ""
+    TWILIO_WHATSAPP_FROM: str = ""
+    TWILIO_API_BASE_URL: str = "https://api.twilio.com"
+
     # Frontend URL
     FRONTEND_URL: str = "http://localhost:3000"
 
@@ -48,6 +55,9 @@ class Settings(BaseSettings):
     
     # Redis Settings
     REDIS_URL: str = "redis://localhost:6373/0"
+
+    # Background scheduler settings
+    CAMPAIGN_SCHEDULER_INTERVAL_SECONDS: int = 15
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

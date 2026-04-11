@@ -120,7 +120,7 @@ def _calculate_dynamic_tag_score(
     delivery_failure_count = int(stats.get("delivery_failure_count", 0) or 0)
     campaign_touchpoints = int(stats.get("campaign_touchpoints", 0) or 0)
 
-    interaction_count = max(base_interactions, unique_open_count + unique_click_count)
+    interaction_count = max(base_interactions, unique_open_count + unique_click_count, delivery_count)
     last_open_at = stats.get("last_open_at") or engagement.get("last_open_at")
     last_click_at = stats.get("last_click_at") or engagement.get("last_click_at")
     most_recent_touch = max([value for value in [last_open_at, last_click_at] if value], default=None)
@@ -170,6 +170,7 @@ def _calculate_dynamic_tag_score(
         "last_open_at": last_open_at,
         "last_click_at": last_click_at,
         "campaign_touchpoints": campaign_touchpoints,
+        "delivery_count": delivery_count,
         "eligible": interaction_count >= min_interactions,
     }
 
@@ -286,6 +287,8 @@ async def resolve_dynamic_group_request(user_id: str, request: DynamicGroupResol
             "dynamic_score": score_info["dynamic_score"],
             "tag_score": score_info["tag_score"],
             "interaction_count": score_info["interaction_count"],
+            "delivery_count": score_info["delivery_count"],
+            "campaign_touchpoints": score_info["campaign_touchpoints"],
             "unique_open_count": score_info["unique_open_count"],
             "unique_click_count": score_info["unique_click_count"],
             "last_open_at": score_info["last_open_at"],

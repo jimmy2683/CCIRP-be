@@ -75,6 +75,8 @@ class DynamicGroupResolvedRecipient(BaseModel):
     dynamic_score: float
     tag_score: float
     interaction_count: int
+    delivery_count: int = 0
+    campaign_touchpoints: int = 0
     unique_open_count: int
     unique_click_count: int
     last_open_at: Optional[datetime] = None

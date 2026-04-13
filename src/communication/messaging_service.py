@@ -113,6 +113,7 @@ class MessagingService:
                 headers={
                     "Authorization": f"Basic {auth_header}",
                     "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "CCIRP-Backend/1.0",
                 },
                 method="POST",
             )

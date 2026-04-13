@@ -71,6 +71,7 @@ class EmailService:
                 headers={
                     "Authorization": f"Bearer {settings.RESEND_API_KEY}",
                     "Content-Type": "application/json",
+                    "User-Agent": "CCIRP-Backend/1.0",
                 },
                 method="POST",
             )

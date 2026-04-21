@@ -5,13 +5,20 @@ from src.users.models import UserDB
 
 class UserService:
     @staticmethod
-    async def list_users() -> List[dict]:
+    async def list_users(skip: int = 0, limit: int = 100) -> dict:
         db = get_database()
-        cursor = db.users.find({"phone": {"$nin": [None, ""]}})
-        users = await cursor.to_list(length=1000)
+        query = {"phone": {"$nin": [None, ""]}}
+        total = await db.users.count_documents(query)
+        cursor = db.users.find(query).skip(skip).limit(limit)
+        users = await cursor.to_list(length=limit)
         for user in users:
             user["id"] = str(user["_id"])
-        return users
+        return {
+            "items": users,
+            "total": total,
+            "skip": skip,
+            "limit": limit
+        }
 
     @staticmethod
     async def sync_user_recipient(user: dict, owner_user_id: Optional[str] = None) -> None:

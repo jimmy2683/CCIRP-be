@@ -92,11 +92,17 @@ async def create_recipient(user_id: str, recipient_data: RecipientCreate) -> Rec
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-async def get_recipients(user_id: str, skip: int = 0, limit: int = 100) -> list[RecipientDB]:
+async def get_recipients(user_id: str, skip: int = 0, limit: int = 100) -> dict:
     db = get_database()
+    total = await db.recipients.count_documents({"user_id": user_id})
     cursor = db.recipients.find({"user_id": user_id}).skip(skip).limit(limit)
     recipients = await cursor.to_list(length=limit)
-    return [RecipientDB(**rec) for rec in recipients]
+    return {
+        "items": [RecipientDB(**rec) for rec in recipients],
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 async def get_recipient(user_id: str, recipient_id: str) -> RecipientDB:
     db = get_database()

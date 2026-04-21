@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
 from typing import List
 from src.auth.dependencies import get_current_user
 from src.recipients.schemas import RecipientCreate, RecipientUpdate, RecipientResponse
+from src.pagination import PaginatedResponse
 from src.recipients.service import (
     create_recipient,
     get_recipients,
@@ -29,7 +30,7 @@ async def bulk_import_recipients(
         raise HTTPException(status_code=400, detail="File must be a CSV")
     return await import_csv(current_user["id"], file)
 
-@router.get("/", response_model=List[RecipientResponse])
+@router.get("/", response_model=PaginatedResponse[RecipientResponse])
 async def read_recipients(
     skip: int = 0,
     limit: int = 100,

@@ -438,10 +438,17 @@ async def create_static_group(user_id: str, group_data: StaticGroupCreate) -> di
     return _group_response(created)
 
 
-async def list_static_groups(user_id: str) -> list[dict]:
+async def list_static_groups(user_id: str, skip: int = 0, limit: int = 100) -> dict:
     db = get_database()
-    groups = await db["groups"].find({"created_by": user_id, "type": "static"}).sort("created_at", -1).to_list(length=500)
-    return [_group_response(group) for group in groups]
+    query = {"created_by": user_id, "type": "static"}
+    total = await db["groups"].count_documents(query)
+    groups = await db["groups"].find(query).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
+    return {
+        "items": [_group_response(group) for group in groups],
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 
 async def get_static_group(user_id: str, group_id: str) -> dict:

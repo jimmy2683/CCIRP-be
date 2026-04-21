@@ -13,6 +13,7 @@ from src.groups.schemas import (
     StaticGroupResponse,
     StaticGroupUpdate,
 )
+from src.pagination import PaginatedResponse
 from src.groups.service import (
     create_static_group,
     delete_static_group,
@@ -37,9 +38,9 @@ async def create_static_group_endpoint(
     return await create_static_group(current_user["id"], group_data)
 
 
-@router.get("/", response_model=List[StaticGroupResponse])
-async def list_static_groups_endpoint(current_user: dict = Depends(get_current_active_user)):
-    return await list_static_groups(current_user["id"])
+@router.get("/", response_model=PaginatedResponse[StaticGroupResponse])
+async def list_static_groups_endpoint(skip: int = 0, limit: int = 100, current_user: dict = Depends(get_current_active_user)):
+    return await list_static_groups(current_user["id"], skip=skip, limit=limit)
 
 
 @router.get("/dynamic/preferences", response_model=List[DynamicGroupPreferenceResponse])

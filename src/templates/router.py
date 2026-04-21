@@ -3,6 +3,7 @@ from typing import List, Optional
 from src.templates.schemas import TemplateCreate, TemplateUpdate, Template, TemplatePreviewRequest, TestSendRequest
 from src.templates.service import TemplateService
 from src.auth.dependencies import get_current_active_user
+from src.pagination import PaginatedResponse
 
 router = APIRouter(prefix="/templates", tags=["Templates"])
 
@@ -10,9 +11,9 @@ router = APIRouter(prefix="/templates", tags=["Templates"])
 async def create_template(template: TemplateCreate, current_user: dict = Depends(get_current_active_user)):
     return await TemplateService.create_template(template, current_user["id"])
 
-@router.get("/", response_model=List[Template])
-async def list_templates(type: Optional[str] = None, current_user: dict = Depends(get_current_active_user)):
-    return await TemplateService.get_templates(current_user["id"], type)
+@router.get("/", response_model=PaginatedResponse[Template])
+async def list_templates(type: Optional[str] = None, skip: int = 0, limit: int = 100, current_user: dict = Depends(get_current_active_user)):
+    return await TemplateService.get_templates(current_user["id"], type, skip=skip, limit=limit)
 
 @router.get("/fields")
 async def get_merge_fields():

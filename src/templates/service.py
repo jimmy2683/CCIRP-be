@@ -20,7 +20,7 @@ class TemplateService:
         return new_template
 
     @staticmethod
-    async def get_templates(current_user_id: Optional[str] = None, type: Optional[str] = None) -> List[dict]:
+    async def get_templates(current_user_id: Optional[str] = None, type: Optional[str] = None, skip: int = 0, limit: int = 100) -> dict:
         db = get_database()
         
         # Build filter: include common templates OR templates created by current user
@@ -45,12 +45,18 @@ class TemplateService:
                 filter_query = {"is_common": {"$ne": False}}
         
         cursor = db.templates.find(filter_query)
-        documents = await cursor.to_list(length=100)
+        total = await db.templates.count_documents(filter_query)
+        documents = await cursor.skip(skip).limit(limit).to_list(length=limit)
         templates = []
         for document in documents:
             document["_id"] = str(document["_id"])
             templates.append(document)
-        return templates
+        return {
+            "items": templates,
+            "total": total,
+            "skip": skip,
+            "limit": limit
+        }
 
     @staticmethod
     async def get_template_by_id(template_id: str, current_user_id: Optional[str] = None) -> Optional[dict]:

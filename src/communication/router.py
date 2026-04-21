@@ -5,6 +5,7 @@ from bson import ObjectId
 
 from src.communication.schemas import CampaignCreate, CampaignResponse
 from src.communication.models import CampaignDB
+from src.pagination import PaginatedResponse
 from src.communication.service import (
     normalize_campaign_channels,
     prepare_campaign_priority_dispatch,
@@ -132,11 +133,13 @@ async def create_campaign(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/", response_model=List[CampaignResponse])
-async def list_campaigns(current_user: dict = Depends(get_current_active_user)):
+@router.get("/", response_model=PaginatedResponse[CampaignResponse])
+async def list_campaigns(skip: int = 0, limit: int = 100, current_user: dict = Depends(get_current_active_user)):
     db = get_database()
-    cursor = db["campaigns"].find({"created_by": current_user["id"]})
-    campaigns = await cursor.to_list(length=100)
+    query = {"created_by": current_user["id"]}
+    total = await db["campaigns"].count_documents(query)
+    cursor = db["campaigns"].find(query).skip(skip).limit(limit)
+    campaigns = await cursor.to_list(length=limit)
     
     for camp in campaigns:
         camp.setdefault("channels", ["email"])
@@ -144,7 +147,12 @@ async def list_campaigns(current_user: dict = Depends(get_current_active_user)):
         camp.setdefault("group_ids", [])
         camp["id"] = str(camp["_id"])
         
-    return campaigns
+    return {
+        "items": campaigns,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 
 @router.get("/stats", response_model=dict)

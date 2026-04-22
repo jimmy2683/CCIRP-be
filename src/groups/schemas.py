@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -99,3 +99,45 @@ class DynamicGroupResolvePayload(BaseModel):
 
 class DynamicGroupResolveResponse(BaseModel):
     groups: List[DynamicGroupResolvedAudience] = Field(default_factory=list)
+
+
+class SegmentationRequest(BaseModel):
+    tag: str = Field(..., min_length=1)
+    max_output_size: int = Field(default=100, gt=0, le=10000)
+    similarity_threshold: float = Field(default=0.15, ge=-1.0, le=1.0)
+    aggregation: Literal["max", "average"] = "max"
+    weighting: Literal["proportional", "softmax"] = "proportional"
+    softmax_temperature: float = Field(default=0.2, gt=0.0)
+
+
+class SegmentationContribution(BaseModel):
+    group_id: str
+    tag: str
+    tag_key: str
+    similarity_score: float
+    normalized_score: float
+    weight: float
+    requested_count: int
+    selected_count: int
+
+
+class SegmentationRecipient(DynamicGroupResolvedRecipient):
+    source_group_ids: List[str] = Field(default_factory=list)
+    source_group_tags: List[str] = Field(default_factory=list)
+
+
+class SegmentationResponse(BaseModel):
+    id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    type: str = "ai_segmentation"
+    tag: str
+    tag_key: str
+    recipient_ids: List[str] = Field(default_factory=list)
+    recipient_emails: List[str] = Field(default_factory=list)
+    recipient_count: int = 0
+    total_eligible_groups: int = 0
+    total_matched_groups: int = 0
+    similarity_scores: Dict[str, float] = Field(default_factory=dict)
+    group_contributions: List[SegmentationContribution] = Field(default_factory=list)
+    recipients: List[SegmentationRecipient] = Field(default_factory=list)

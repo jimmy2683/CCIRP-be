@@ -15,12 +15,16 @@ from src.groups.models import DynamicGroupPreferenceDB, GroupDB
 from src.groups.schemas import (
     DynamicGroupPreferenceUpsert,
     DynamicGroupResolveRequest,
+    SegmentationRequest,
     StaticGroupCreate,
     StaticGroupUpdate,
 )
 
 
 _dynamic_group_indexes_ready = False
+_embedding_indexes_ready = False
+_embedding_model = None
+_EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def _dedupe_strings(values: Iterable[str]) -> List[str]:
@@ -42,6 +46,82 @@ def _normalize_tag_key(tag: str) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(value, upper))
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
+def _load_embedding_model():
+    global _embedding_model
+    if _embedding_model is not None:
+        return _embedding_model
+
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Sentence-BERT embeddings are unavailable. Install sentence-transformers to enable similarity grouping.",
+        ) from exc
+
+    try:
+        _embedding_model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Unable to load embedding model: {exc}") from exc
+    return _embedding_model
+
+
+async def _ensure_embedding_indexes(db) -> None:
+    global _embedding_indexes_ready
+    if _embedding_indexes_ready:
+        return
+
+    await db["tag_embeddings"].create_index(
+        [("model_name", 1), ("text_key", 1)],
+        unique=True,
+        name="tag_embedding_unique",
+    )
+    _embedding_indexes_ready = True
+
+
+async def _get_tag_embedding(db, text: str) -> list[float]:
+    clean_text = text.strip()
+    text_key = _normalize_tag_key(clean_text)
+    await _ensure_embedding_indexes(db)
+
+    cached = await db["tag_embeddings"].find_one(
+        {"model_name": _EMBEDDING_MODEL_NAME, "text_key": text_key},
+        {"embedding": 1},
+    )
+    if cached and cached.get("embedding"):
+        return [float(value) for value in cached["embedding"]]
+
+    model = _load_embedding_model()
+    embedding = model.encode(clean_text, normalize_embeddings=True)
+    embedding_list = [float(value) for value in embedding.tolist()]
+    now = datetime.now(timezone.utc)
+    await db["tag_embeddings"].update_one(
+        {"model_name": _EMBEDDING_MODEL_NAME, "text_key": text_key},
+        {
+            "$set": {
+                "text": clean_text,
+                "embedding": embedding_list,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+    return embedding_list
 
 
 def _group_response(group: dict) -> dict:
@@ -343,6 +423,305 @@ async def resolve_dynamic_group_emails(user_id: str, requests: list[DynamicGroup
             )
 
     return emails, resolved_groups
+
+
+def _normalize_similarity_scores(scores: dict[str, float]) -> dict[str, float]:
+    if not scores:
+        return {}
+
+    min_score = min(scores.values())
+    max_score = max(scores.values())
+    if math.isclose(min_score, max_score):
+        return {group_id: 1.0 for group_id in scores}
+
+    return {
+        group_id: _clamp((score - min_score) / (max_score - min_score), 0.0, 1.0)
+        for group_id, score in scores.items()
+    }
+
+
+def _score_weights(normalized_scores: dict[str, float], weighting: str, temperature: float) -> dict[str, float]:
+    if not normalized_scores:
+        return {}
+
+    if weighting == "softmax":
+        exp_scores = {
+            group_id: math.exp(score / temperature)
+            for group_id, score in normalized_scores.items()
+        }
+        total = sum(exp_scores.values())
+        return {group_id: value / total for group_id, value in exp_scores.items()} if total else {}
+
+    total = sum(normalized_scores.values())
+    if total <= 0:
+        equal_weight = 1 / len(normalized_scores)
+        return {group_id: equal_weight for group_id in normalized_scores}
+    return {group_id: score / total for group_id, score in normalized_scores.items()}
+
+
+def _allocate_group_counts(weights: dict[str, float], max_output_size: int) -> dict[str, int]:
+    if not weights or max_output_size <= 0:
+        return {}
+
+    ranked = sorted(weights.items(), key=lambda item: (-item[1], item[0]))
+    if len(ranked) >= max_output_size:
+        return {group_id: 1 for group_id, _ in ranked[:max_output_size]}
+
+    allocations = {group_id: 1 for group_id, _ in ranked}
+    remaining = max_output_size - len(allocations)
+    weighted_targets = {
+        group_id: max_output_size * weight
+        for group_id, weight in weights.items()
+    }
+
+    base_extra = {}
+    for group_id, target in weighted_targets.items():
+        extra = max(math.floor(target) - allocations[group_id], 0)
+        base_extra[group_id] = extra
+        allocations[group_id] += extra
+
+    remaining -= sum(base_extra.values())
+    if remaining <= 0:
+        return allocations
+
+    remainders = sorted(
+        (
+            (group_id, weighted_targets[group_id] - math.floor(weighted_targets[group_id]), weights[group_id])
+            for group_id in weights
+        ),
+        key=lambda item: (-item[1], -item[2], item[0]),
+    )
+    for index in range(remaining):
+        group_id = remainders[index % len(remainders)][0]
+        allocations[group_id] += 1
+
+    return allocations
+
+
+def _recipient_segmentation_payload(
+    recipient: dict,
+    *,
+    source_group_id: str,
+    source_group_tag: str,
+    similarity_score: float,
+) -> dict:
+    tag_key = _normalize_tag_key(source_group_tag)
+    engagement = recipient.get("engagement") or {}
+    tag_scores = engagement.get("tag_scores") or {}
+    interaction_counts = engagement.get("tag_interaction_counts") or {}
+    tag_score = float(tag_scores.get(tag_key, 0) or 0)
+    interaction_count = int(interaction_counts.get(tag_key, 0) or 0)
+
+    return {
+        "id": str(recipient["_id"]),
+        "email": recipient["email"],
+        "name": _display_name(recipient),
+        "dynamic_score": round(_clamp((similarity_score * 70) + min(tag_score, 30), 0.0, 100.0), 2),
+        "tag_score": round(tag_score, 2),
+        "interaction_count": interaction_count,
+        "delivery_count": 0,
+        "campaign_touchpoints": 0,
+        "unique_open_count": 0,
+        "unique_click_count": 0,
+        "last_open_at": engagement.get("last_open_at"),
+        "last_click_at": engagement.get("last_click_at"),
+        "source_group_ids": [source_group_id],
+        "source_group_tags": [source_group_tag],
+    }
+
+
+def _collect_recipient_tag_segments(recipients: list[dict]) -> dict[str, dict]:
+    segments = {}
+    for recipient in recipients:
+        for raw_tag in recipient.get("tags") or []:
+            tag = str(raw_tag).strip()
+            if not tag:
+                continue
+            tag_key = _normalize_tag_key(tag)
+            group_id = f"recipient_tag:{tag_key}"
+            segment = segments.setdefault(
+                group_id,
+                {
+                    "group_id": group_id,
+                    "tag": tag,
+                    "tag_key": tag_key,
+                    "source": "recipient_tags",
+                    "recipients": [],
+                },
+            )
+            segment["recipients"].append(recipient)
+
+        engagement = recipient.get("engagement") or {}
+        for tag_key in (engagement.get("tag_scores") or {}).keys():
+            clean_tag_key = _normalize_tag_key(tag_key)
+            group_id = f"engagement_tag:{clean_tag_key}"
+            segment = segments.setdefault(
+                group_id,
+                {
+                    "group_id": group_id,
+                    "tag": str(tag_key).replace("_", " "),
+                    "tag_key": clean_tag_key,
+                    "source": "recipient_engagement",
+                    "recipients": [],
+                },
+            )
+            segment["recipients"].append(recipient)
+    return segments
+
+
+async def resolve_segmentation(user_id: str, request: SegmentationRequest) -> dict:
+    db = get_database()
+    tag = request.tag.strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="Tag is required")
+
+    preferences = await list_dynamic_group_preferences(user_id)
+    recipients = await db["recipients"].find({"user_id": user_id}).to_list(length=5000)
+    tag_key = _normalize_tag_key(tag)
+    recipient_tag_segments = _collect_recipient_tag_segments(recipients)
+    candidate_segments = {
+        str(preference["_id"]): {
+            "group_id": str(preference["_id"]),
+            "tag": preference["tag"],
+            "tag_key": preference["tag_key"],
+            "source": "dynamic_preference",
+            "preference": preference,
+        }
+        for preference in preferences
+    }
+    candidate_segments.update(recipient_tag_segments)
+
+    base_response = {
+        "id": None,
+        "name": f"AI Segmentation: {tag}",
+        "description": "Similarity-based audience generated from existing dynamic segments and recipient tags.",
+        "type": "ai_segmentation",
+        "tag": tag,
+        "tag_key": tag_key,
+        "recipient_ids": [],
+        "recipient_emails": [],
+        "recipient_count": 0,
+        "total_eligible_groups": len(candidate_segments),
+        "total_matched_groups": 0,
+        "similarity_scores": {},
+        "group_contributions": [],
+        "recipients": [],
+    }
+    if not candidate_segments:
+        return base_response
+
+    target_embedding = await _get_tag_embedding(db, tag)
+    similarity_scores = {}
+
+    for group_id, segment in candidate_segments.items():
+        group_tags = [segment["tag"]]
+        group_scores = [
+            _cosine_similarity(target_embedding, await _get_tag_embedding(db, group_tag))
+            for group_tag in group_tags
+        ]
+        if request.aggregation == "average":
+            score = sum(group_scores) / len(group_scores)
+        else:
+            score = max(group_scores)
+        similarity_scores[group_id] = round(score, 6)
+
+    filtered_scores = {
+        group_id: score
+        for group_id, score in similarity_scores.items()
+        if score >= request.similarity_threshold
+    }
+    normalized_scores = _normalize_similarity_scores(filtered_scores)
+    weights = _score_weights(normalized_scores, request.weighting, request.softmax_temperature)
+    allocations = _allocate_group_counts(weights, request.max_output_size)
+
+    selected_by_email = {}
+    group_contributions = []
+    for group_id, requested_count in sorted(
+        allocations.items(),
+        key=lambda item: (-weights.get(item[0], 0.0), -filtered_scores.get(item[0], 0.0), item[0]),
+    ):
+        segment = candidate_segments[group_id]
+        if segment["source"] == "dynamic_preference":
+            preference = segment["preference"]
+            resolve_top_k = min(request.max_output_size, max(requested_count * 2, requested_count + 5))
+            resolved_group = await resolve_dynamic_group_request(
+                user_id,
+                DynamicGroupResolveRequest(
+                    tag=preference["tag"],
+                    top_k=resolve_top_k,
+                    min_interactions=preference.get("min_interactions", 1),
+                ),
+            )
+            segment_recipients = [
+                {
+                    **recipient,
+                    "source_group_ids": [group_id],
+                    "source_group_tags": [segment["tag"]],
+                }
+                for recipient in resolved_group.get("recipients", [])
+            ]
+        else:
+            segment_recipients = [
+                _recipient_segmentation_payload(
+                    recipient,
+                    source_group_id=group_id,
+                    source_group_tag=segment["tag"],
+                    similarity_score=filtered_scores[group_id],
+                )
+                for recipient in segment.get("recipients", [])
+            ]
+            segment_recipients.sort(
+                key=lambda recipient: (
+                    -recipient["dynamic_score"],
+                    -recipient["interaction_count"],
+                    recipient["email"].lower(),
+                )
+            )
+
+        selected_count = 0
+        for recipient in segment_recipients:
+            if selected_count >= requested_count or len(selected_by_email) >= request.max_output_size:
+                break
+
+            email = recipient["email"]
+            existing = selected_by_email.get(email)
+            if existing:
+                existing["source_group_ids"].append(group_id)
+                existing["source_group_tags"].append(segment["tag"])
+                continue
+
+            selected_by_email[email] = {
+                **recipient,
+                "source_group_ids": [group_id],
+                "source_group_tags": [segment["tag"]],
+            }
+            selected_count += 1
+
+        group_contributions.append({
+            "group_id": group_id,
+            "tag": segment["tag"],
+            "tag_key": segment["tag_key"],
+            "similarity_score": similarity_scores[group_id],
+            "normalized_score": round(normalized_scores.get(group_id, 0.0), 6),
+            "weight": round(weights.get(group_id, 0.0), 6),
+            "requested_count": requested_count,
+            "selected_count": selected_count,
+        })
+
+    recipients = sorted(
+        selected_by_email.values(),
+        key=lambda recipient: (-recipient["dynamic_score"], recipient["email"].lower()),
+    )
+    base_response.update({
+        "recipient_ids": [recipient["id"] for recipient in recipients],
+        "recipient_emails": [recipient["email"] for recipient in recipients],
+        "recipient_count": len(recipients),
+        "total_matched_groups": len(filtered_scores),
+        "similarity_scores": similarity_scores,
+        "group_contributions": group_contributions,
+        "recipients": recipients,
+    })
+    return base_response
 
 
 async def _resolve_recipients(user_id: str, recipient_ids: Iterable[str]) -> tuple[List[str], List[str]]:

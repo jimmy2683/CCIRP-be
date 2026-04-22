@@ -8,6 +8,8 @@ from src.groups.schemas import (
     DynamicGroupPreferenceUpsert,
     DynamicGroupResolvePayload,
     DynamicGroupResolveResponse,
+    SegmentationRequest,
+    SegmentationResponse,
     StaticGroupCreate,
     StaticGroupCsvImportResponse,
     StaticGroupResponse,
@@ -22,6 +24,7 @@ from src.groups.service import (
     get_static_group,
     list_static_groups,
     resolve_dynamic_group_payload,
+    resolve_segmentation,
     upsert_dynamic_group_preference,
     update_static_group,
 )
@@ -62,6 +65,14 @@ async def resolve_dynamic_groups_endpoint(
     current_user: dict = Depends(get_current_active_user),
 ):
     return {"groups": await resolve_dynamic_group_payload(current_user["id"], payload.groups)}
+
+
+@router.post("/segmentation/resolve", response_model=SegmentationResponse)
+async def resolve_segmentation_endpoint(
+    payload: SegmentationRequest,
+    current_user: dict = Depends(get_current_active_user),
+):
+    return await resolve_segmentation(current_user["id"], payload)
 
 
 @router.post("/import-csv", response_model=StaticGroupCsvImportResponse)

@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from typing import Dict, Any
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
-
+import csv
+import io
 from src.auth.dependencies import get_current_active_user
 from src.database import get_database
 
@@ -296,3 +297,73 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
         ],
         "recipients": recipient_activity
     }
+
+@router.get("/campaigns/{campaign_id}/export")
+async def export_campaign_analytics(campaign_id: str, current_user: dict = Depends(get_current_active_user)):
+    db = get_database()
+    
+    try:
+        camp_query = {"_id": ObjectId(campaign_id)}
+    except Exception:
+        camp_query = {"_id": campaign_id}
+        
+    campaign = await db["campaigns"].find_one(camp_query)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign["created_by"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    open_tracking_enabled = supports_open_tracking(campaign)
+
+    # Export all up to 10k recipients
+    recipients_cursor = db["campaign_recipient_stats"].find({"campaign_id": campaign_id, "channel": "email"})
+    recipients_list = await recipients_cursor.to_list(length=10000)
+    
+    recipient_emails = [r["recipient_email"] for r in recipients_list]
+    
+    db_recipients_cursor = db["recipients"].find(
+        {"user_id": current_user["id"], "email": {"$in": recipient_emails}}
+    )
+    recipients_map = {}
+    for r in await db_recipients_cursor.to_list(length=10000):
+        full_name = " ".join(
+            part for part in [r.get("first_name"), r.get("last_name")] if part
+        ).strip()
+        recipients_map[r["email"]] = full_name or r["email"]
+
+    users_cursor = db["users"].find({"email": {"$in": recipient_emails}})
+    users_map = {u["email"]: u.get("full_name", u["email"]) for u in await users_cursor.to_list(length=10000)}
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    headers = ["Email", "Name", "Delivery Status"]
+    if open_tracking_enabled:
+        headers.append("Open Count")
+        headers.append("Opened At")
+    
+    headers.extend(["Click Count", "Clicked At"])
+    writer.writerow(headers)
+    
+    for r in recipients_list:
+        email = r["recipient_email"]
+        name = recipients_map.get(email) or users_map.get(email, email.split("@")[0])
+        status = r.get("delivery_status", "pending")
+        
+        row = [email, name, status]
+        if open_tracking_enabled:
+            row.append(str(r.get("open_count", 0)))
+            row.append(r.get("last_open_at").isoformat() if r.get("last_open_at") else "")
+            
+        row.append(str(r.get("click_count", 0)))
+        row.append(r.get("last_click_at").isoformat() if r.get("last_click_at") else "")
+        
+        writer.writerow(row)
+
+    csv_content = output.getvalue()
+    
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=campaign_{campaign_id}_analytics.csv"}
+    )

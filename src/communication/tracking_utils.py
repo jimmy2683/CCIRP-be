@@ -147,18 +147,30 @@ def inject_tracking(
 
     open_url = f"{tracking_base_url}/track/open/{token}.png"
     click_base = f"{tracking_base_url}/track/click/{token}"
+    unsubscribe_url = f"{tracking_base_url}/track/unsubscribe/{token}"
 
     rewritten = _rewrite_anchor_links(html, click_base)
     pixel_tag = (
         f'<img src="{open_url}" alt="" width="1" height="1" '
         f'style="width:1px;height:1px;opacity:0;border:0;" loading="eager" decoding="sync" />'
     )
+    
+    unsubscribe_content = ""
+    if channel == "email":
+        unsubscribe_content = (
+            f'<div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #eaeaea; font-family: sans-serif; font-size: 12px; color: #6b7280; text-align: center;">'
+            f'You are receiving this email because you are subscribed to our communications.<br/>'
+            f'To stop receiving these emails, you may <a href="{unsubscribe_url}" style="color: #6b7280; text-decoration: underline;">unsubscribe here</a>.'
+            f'</div>'
+        )
+
+    inject_payload = unsubscribe_content + pixel_tag
 
     body_close = re.search(r"</body>", rewritten, flags=re.IGNORECASE)
     if body_close:
         idx = body_close.start()
-        return rewritten[:idx] + pixel_tag + rewritten[idx:]
-    return rewritten + pixel_tag
+        return rewritten[:idx] + inject_payload + rewritten[idx:]
+    return rewritten + inject_payload
 
 
 def inject_click_tracking_text(

@@ -203,6 +203,15 @@ async def _ensure_audience_recipients(
 
 
 def _channel_ready(channel: str, recipient_doc: Optional[dict]) -> tuple[bool, str]:
+    if recipient_doc:
+        status = str(recipient_doc.get("status", "active")).lower()
+        if status == "unsubscribed":
+            return False, f"Recipient has unsubscribed from all communications"
+            
+        consent_flags = recipient_doc.get("consent_flags", {})
+        if consent_flags.get(channel) is False:
+            return False, f"Recipient has withdrawn consent for {channel}"
+
     if channel == "email":
         return True, ""
 

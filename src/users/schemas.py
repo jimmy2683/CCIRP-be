@@ -1,5 +1,6 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_serializer
 from typing import Optional
+from datetime import datetime
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -14,6 +15,12 @@ class UserResponse(BaseModel):
     phone: Optional[str] = None
     role: str
     is_active: bool
+    tracking_consent: bool = True
+    created_at: Optional[datetime] = None
+
+    @field_serializer('created_at')
+    def serialize_created_at(self, v: Optional[datetime]) -> Optional[str]:
+        return v.isoformat() if v else None
 
     class Config:
         from_attributes = True
@@ -26,6 +33,7 @@ class Token(BaseModel):
 class UserProfileUpdate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
+    tracking_consent: Optional[bool] = None
 
 class ChangePasswordRequest(BaseModel):
     current_password: str

@@ -16,6 +16,17 @@ def _require_db():
     return db
 
 
+async def _tracking_allowed(db, owner_user_id: str, recipient_email: str) -> bool:
+    """Return False only when the recipient has explicitly set consent_flags.tracking = False."""
+    rec = await db["recipients"].find_one(
+        {"user_id": owner_user_id, "email": recipient_email},
+        {"consent_flags": 1},
+    )
+    if not rec:
+        return True
+    return rec.get("consent_flags", {}).get("tracking", True) is not False
+
+
 @router.get("/open/{token}.png")
 async def track_open(token: str, request: Request):
     db = _require_db()
@@ -24,16 +35,17 @@ async def track_open(token: str, request: Request):
     except ValueError:
         return Response(content=TRANSPARENT_PNG_BYTES, media_type="image/png")
 
-    await record_engagement_event(
-        db=db,
-        event_type="open",
-        campaign_id=str(payload["c"]),
-        recipient_email=str(payload["r"]),
-        owner_user_id=str(payload["o"]),
-        ip=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        channel=str(payload.get("ch", "email")),
-    )
+    if await _tracking_allowed(db, str(payload["o"]), str(payload["r"])):
+        await record_engagement_event(
+            db=db,
+            event_type="open",
+            campaign_id=str(payload["c"]),
+            recipient_email=str(payload["r"]),
+            owner_user_id=str(payload["o"]),
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            channel=str(payload.get("ch", "email")),
+        )
 
     return Response(content=TRANSPARENT_PNG_BYTES, media_type="image/png")
 
@@ -50,17 +62,18 @@ async def track_click(token: str, request: Request, u: str = Query(..., descript
     if destination_url and not destination_url.lower().startswith(("http://", "https://")):
         destination_url = f"https://{destination_url}"
 
-    await record_engagement_event(
-        db=db,
-        event_type="click",
-        campaign_id=str(payload["c"]),
-        recipient_email=str(payload["r"]),
-        owner_user_id=str(payload["o"]),
-        link_url=destination_url,
-        ip=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        channel=str(payload.get("ch", "email")),
-    )
+    if await _tracking_allowed(db, str(payload["o"]), str(payload["r"])):
+        await record_engagement_event(
+            db=db,
+            event_type="click",
+            campaign_id=str(payload["c"]),
+            recipient_email=str(payload["r"]),
+            owner_user_id=str(payload["o"]),
+            link_url=destination_url,
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            channel=str(payload.get("ch", "email")),
+        )
 
     return RedirectResponse(url=destination_url, status_code=302)
 

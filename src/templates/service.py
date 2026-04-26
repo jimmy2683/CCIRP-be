@@ -84,25 +84,33 @@ class TemplateService:
         db = get_database()
         if not ObjectId.is_valid(template_id):
             return None
-            
-        # Strictly enforce that only the creator can update a template
-        # If it's a general/system template (no created_by or is_common: true), 
-        # regular users won't match this and thus cannot update it.
+
         template = await db.templates.find_one({
-            "_id": ObjectId(template_id), 
+            "_id": ObjectId(template_id),
             "created_by": current_user_id
         })
-        
+
         if not template:
             return None
 
         update_data = {k: v for k, v in template_data.model_dump().items() if v is not None}
         if not update_data:
             return await TemplateService.get_template_by_id(template_id, current_user_id)
-            
+
+        # Save current state to history before overwriting so rollback has something to return to
+        await db.template_history.insert_one({
+            "template_id": ObjectId(template_id),
+            "version": template.get("version", 1),
+            "name": template["name"],
+            "subject": template.get("subject"),
+            "body_html": template["body_html"],
+            "design_json": template.get("design_json"),
+            "updated_at": template.get("updated_at", datetime.utcnow()),
+            "saved_at": datetime.utcnow(),
+        })
+
         update_data["updated_at"] = datetime.utcnow()
-        
-        # Increment version number
+
         result = await db.templates.update_one(
             {"_id": ObjectId(template_id)},
             {
@@ -110,7 +118,7 @@ class TemplateService:
                 "$inc": {"version": 1}
             }
         )
-        
+
         if result.matched_count:
             return await TemplateService.get_template_by_id(template_id, current_user_id)
         return None
@@ -197,7 +205,7 @@ class TemplateService:
         return history
 
     @staticmethod
-    async def rollback_template(template_id: str, version: int) -> Optional[dict]:
+    async def rollback_template(template_id: str, version: int, current_user_id: Optional[str] = None) -> Optional[dict]:
         db = get_database()
         if not ObjectId.is_valid(template_id):
             return None
@@ -242,7 +250,7 @@ class TemplateService:
             }
         )
         
-        return await TemplateService.get_template_by_id(template_id)
+        return await TemplateService.get_template_by_id(template_id, current_user_id)
 
     @staticmethod
     async def get_available_fields() -> List[dict]:

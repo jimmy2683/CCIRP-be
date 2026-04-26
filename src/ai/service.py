@@ -1,4 +1,3 @@
-import asyncio
 import json
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
@@ -33,25 +32,8 @@ def _sse(event_type: str, **kwargs) -> str:
 
 
 def _clean(obj) -> object:
-    """Force a JSON round-trip to strip any proto-typed values from Gemini SDK objects."""
+    """JSON round-trip strips any proto-typed values that cross the SDK boundary."""
     return json.loads(json.dumps(obj, default=str))
-
-
-async def _iter_chunks(response, chunk_timeout: float = 45.0):
-    """
-    Wrap the Gemini streaming async iterator with a per-chunk timeout.
-    The SDK can hang indefinitely when the model returns a function call
-    in streaming mode — the HTTP stream never signals EOF.
-    """
-    it = response.__aiter__()
-    while True:
-        try:
-            chunk = await asyncio.wait_for(it.__anext__(), timeout=chunk_timeout)
-            yield chunk
-        except StopAsyncIteration:
-            break
-        except asyncio.TimeoutError:
-            raise RuntimeError("AI stream timed out waiting for next chunk — the model may be overloaded. Please try again.")
 
 
 async def _ensure_indexes(db) -> None:
@@ -103,35 +85,45 @@ async def agent_stream(
         yield _sse("error", message=f"Failed to initialise AI model: {exc}")
         return
 
-    for _ in range(MAX_TOOL_ITERATIONS):
+    any_text_yielded = False
+    had_tool_calls = False
+    last_tool_results: list[dict] = []
+
+    for iteration in range(MAX_TOOL_ITERATIONS):
         text_accumulated: list[str] = []
         function_calls: list[dict] = []
 
         try:
-            response = await model.generate_content_async(contents, stream=True)
-            async for chunk in _iter_chunks(response):
-                if not chunk.candidates:
-                    continue
-                candidate = chunk.candidates[0]
-                finish = getattr(candidate, "finish_reason", None)
-                if finish and finish.name in ("SAFETY", "RECITATION"):
-                    yield _sse("error", message="Response filtered by model safety system.")
-                    return
-                if not candidate.content or not candidate.content.parts:
-                    continue
-                for part in candidate.content.parts:
-                    if part.text:
-                        text_accumulated.append(part.text)
-                        yield _sse("text_delta", text=part.text)
-                    fc = getattr(part, "function_call", None)
-                    if fc and getattr(fc, "name", None):
-                        # JSON round-trip strips proto MapComposite types → plain dicts
-                        args = _clean(dict(fc.args) if fc.args else {})
-                        function_calls.append({"name": fc.name, "args": args})
-                        yield _sse("tool_start", tool_name=fc.name, tool_input=args)
+            # Non-streaming: avoids the Gemini SDK hang where the async chunk
+            # iterator never signals EOF when the response contains a function call.
+            response = await model.generate_content_async(contents)
         except Exception as exc:
             yield _sse("error", message=str(exc))
             return
+
+        if not response.candidates:
+            break
+
+        candidate = response.candidates[0]
+        finish = getattr(candidate, "finish_reason", None)
+        content_parts = candidate.content.parts if (candidate.content and candidate.content.parts) else []
+
+        if finish and finish.name in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST"):
+            yield _sse("error", message="Response filtered by model safety system.")
+            return
+
+        for part in content_parts:
+            if getattr(part, "thought", False):
+                continue
+            if getattr(part, "text", None):
+                text_accumulated.append(part.text)
+                yield _sse("text_delta", text=part.text)
+                any_text_yielded = True
+            fc = getattr(part, "function_call", None)
+            if fc and getattr(fc, "name", None):
+                args = _clean(dict(fc.args) if fc.args else {})
+                function_calls.append({"name": fc.name, "args": args})
+                yield _sse("tool_start", tool_name=fc.name, tool_input=args)
 
         assistant_parts: list[dict] = []
         if text_accumulated:
@@ -147,19 +139,44 @@ async def agent_stream(
         if not function_calls:
             break
 
+        had_tool_calls = True
+        last_tool_results = []
         tool_response_parts: list[dict] = []
         for fc in function_calls:
             raw = await execute_tool(user_id, fc["name"], fc["args"])
-            # JSON round-trip ensures the result is plain JSON before being fed back
-            # into the SDK as a function_response Struct — avoids silent proto failures.
             result = _clean(raw)
             is_error = "error" in result
+            last_tool_results.append({"tool": fc["name"], "result": result})
             yield _sse("tool_result", tool_name=fc["name"], output=result, is_error=is_error)
             tool_response_parts.append({
                 "function_response": {"name": fc["name"], "response": {"result": result}}
             })
 
         contents.append({"role": "user", "parts": tool_response_parts})
+
+    # Gemini 2.5 Flash (thinking model) sometimes produces only internal thought tokens
+    # after a tool call with no visible text. Inject a model acknowledgment and a user
+    # nudge — this restores the alternating turn structure and reliably triggers a reply.
+    if had_tool_calls and not any_text_yielded:
+        try:
+            # contents ends with: [..., model:fc, user:fr]
+            # Append a model stub + user prompt to keep proper turn alternation
+            nudge_contents = contents + [
+                {"role": "model", "parts": [{"text": "I have retrieved the requested data."}]},
+                {"role": "user", "parts": [{"text": "Please give a clear, direct answer based on that data."}]},
+            ]
+            resp = await model.generate_content_async(nudge_contents)
+            if resp.candidates:
+                c = resp.candidates[0]
+                parts = c.content.parts if (c.content and c.content.parts) else []
+                for part in parts:
+                    if getattr(part, "thought", False):
+                        continue
+                    if getattr(part, "text", None):
+                        yield _sse("text_delta", text=part.text)
+                        any_text_yielded = True
+        except Exception as exc:
+            pass
 
     if len(contents) > MAX_CONVERSATION_MESSAGES:
         contents = contents[-MAX_CONVERSATION_MESSAGES:]

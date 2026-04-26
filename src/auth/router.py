@@ -149,6 +149,9 @@ async def update_current_user_profile(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number is required")
         update_data["phone"] = phone
 
+    if profile_data.tracking_consent is not None:
+        update_data["tracking_consent"] = profile_data.tracking_consent
+
     if not update_data:
         return current_user
 
@@ -157,6 +160,14 @@ async def update_current_user_profile(
     updated_user = await db["users"].find_one({"_id": current_user["_id"]})
     updated_user["id"] = str(updated_user["_id"])
     await UserService.sync_user_recipient(updated_user)
+
+    # Sync tracking consent to the user's own recipient record
+    if profile_data.tracking_consent is not None:
+        await db["recipients"].update_many(
+            {"user_id": updated_user["id"], "email": updated_user["email"]},
+            {"$set": {"consent_flags.tracking": profile_data.tracking_consent}},
+        )
+
     return updated_user
 
 @router.post("/change-password")

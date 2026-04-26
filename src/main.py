@@ -22,6 +22,7 @@ async def lifespan(app: FastAPI):
     # Shutdown: Close MongoDB connection
     await close_mongo_connection()
 
+from src.ai.router import router as ai_router
 from src.templates.router import router as templates_router
 from src.auth.router import router as auth_router
 from src.communication.router import router as communication_router
@@ -39,6 +40,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.include_router(ai_router)
 app.include_router(templates_router)
 app.include_router(auth_router)
 app.include_router(communication_router)

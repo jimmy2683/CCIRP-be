@@ -16,3 +16,4 @@ celery
 redis
 confluent-kafka
 sentence-transformers
+google-generativeai

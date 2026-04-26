@@ -46,6 +46,9 @@ class Settings(BaseSettings):
 
 
     
+    # AI Settings
+    GOOGLE_API_KEY: str = ""
+
     # Celery Settings
     CELERY_BROKER_URL: str = "redis://localhost:6373/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6373/1"

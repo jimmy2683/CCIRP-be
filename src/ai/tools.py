@@ -412,10 +412,55 @@ async def _create_static_group(user_id: str, name: str, recipient_ids: list, des
 
 
 async def _save_dynamic_preference(user_id: str, tag: str, top_k: int, min_interactions: int = 1) -> dict:
-    from src.groups.schemas import DynamicGroupPreferenceUpsert
+    from src.groups.schemas import DynamicGroupPreferenceUpsert, SegmentationRequest, StaticGroupCreate
     from src.groups.service import upsert_dynamic_group_preference as _svc
+    from src.groups.service import resolve_segmentation, create_static_group
+
+    # 1. Save dynamic preference
     result = await _svc(user_id, DynamicGroupPreferenceUpsert(tag=tag, top_k=int(top_k), min_interactions=int(min_interactions)))
-    return {"id": result["id"], "tag": result["tag"], "top_k": result["top_k"], "min_interactions": result["min_interactions"], "message": f"Dynamic preference saved for '{tag}' (top_k={top_k})."}
+
+    # 2. Perform Smart Segmentation to get the current snapshot of top_k users
+    try:
+        segmentation_response = await resolve_segmentation(
+            user_id,
+            SegmentationRequest(tag=tag, max_output_size=int(top_k), similarity_threshold=0.15)
+        )
+
+        recipient_ids = segmentation_response.get("recipient_ids", [])
+        static_group_msg = "No recipients found for smart segment."
+        static_group_id = None
+
+        # 3. Save as a static group
+        if recipient_ids:
+            group_name = f"Smart Segment: {tag} (Top {top_k})"
+            static_group = await create_static_group(
+                user_id,
+                StaticGroupCreate(
+                    name=group_name,
+                    description=f"AI segmented static group for '{tag}'",
+                    recipient_ids=recipient_ids,
+                    import_group_ids=[]
+                )
+            )
+            static_group_id = static_group["id"]
+            static_group_msg = f"Created static group '{group_name}' with {len(recipient_ids)} recipients."
+
+        return {
+            "id": result["id"],
+            "static_group_id": static_group_id,
+            "tag": result["tag"],
+            "top_k": result["top_k"],
+            "min_interactions": result["min_interactions"],
+            "message": f"Dynamic preference saved for '{tag}' (top_k={top_k}). {static_group_msg}"
+        }
+    except Exception as exc:
+        return {
+            "id": result["id"],
+            "tag": result["tag"],
+            "top_k": result["top_k"],
+            "min_interactions": result["min_interactions"],
+            "message": f"Dynamic preference saved for '{tag}' (top_k={top_k}), but smart segmentation failed: {exc}"
+        }
 
 
 # ── dispatcher ─────────────────────────────────────────────────────────────

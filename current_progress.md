@@ -34,6 +34,7 @@
 - **Workflow Persistence**: Endpoint architecture mapped to save draft and operational communication broadcasts.
 - **Relational Integrity**: Campaigns dynamically link User identities and target Assets.
 - **List Aggregation**: Designed to securely host `recipients` criteria and `scheduled_at` dispatch timing.
+- **AI Spam Detection & Content Moderation**: Implemented AI-driven pre-flight checks (`POST /campaigns/check-spam` and internal queue hooks) that evaluate campaign content across email, SMS, and WhatsApp channels to prevent dispatching spam and protect IP reputation.
 - **Campaign Insights**: Implemented a new summary endpoint for high-level campaign analytics.
 
 ### 6. Module Scaffolding & Infrastructure

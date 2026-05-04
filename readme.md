@@ -102,6 +102,7 @@ backend
 * **List Aggregation**: Designed to securely host `recipients` criteria and `scheduled_at` dispatch timing.
 
 ### AI Integration
+* **Multi-Channel Spam Detection**: AI-driven content moderation for emails, SMS, and WhatsApp to prevent IP blacklisting.
 * AI-powered reminder suggestions
 * Task prioritization logic
 * Future predictive scheduling support

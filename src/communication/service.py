@@ -546,6 +546,30 @@ async def enqueue_campaign_recipients(campaign_id: str) -> int:
     if not campaign:
         return 0
 
+    from src.ai.spam_detector import analyze_spam_score
+    try:
+        template = await db["templates"].find_one({"_id": ObjectId(campaign["template_id"])})
+    except Exception:
+        template = await db["templates"].find_one({"_id": campaign["template_id"]})
+        
+    if template:
+        subject = campaign.get("subject") or template.get("subject", "")
+        text_content = html_to_text(template.get("body_html", ""))
+        spam_result = await analyze_spam_score(subject, text_content)
+        if spam_result.get("is_spam"):
+            await db["campaigns"].update_one(
+                _campaign_query(campaign_id),
+                {
+                    "$set": {
+                        "status": "failed",
+                        "error_message": f"Spam detected: {spam_result.get('reason')}",
+                        "spam_score": spam_result.get("score"),
+                        "updated_at": datetime.now(timezone.utc)
+                    }
+                }
+            )
+            return 0
+
     base_recipients = campaign.get("recipients", [])
     dynamic_group_requests = [
         DynamicGroupResolveRequest.model_validate(request)

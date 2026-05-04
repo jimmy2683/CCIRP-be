@@ -39,6 +39,8 @@ class CampaignResponse(BaseModel):
     queue_prepared_at: Optional[datetime] = None
     dispatch_started_at: Optional[datetime] = None
     dispatch_completed_at: Optional[datetime] = None
+    spam_score: Optional[float] = None
+    error_message: Optional[str] = None
     created_by: str
     created_at: datetime
 

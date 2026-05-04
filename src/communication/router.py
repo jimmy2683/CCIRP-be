@@ -65,6 +65,33 @@ def get_campaign_channels(campaign: Dict[str, Any]) -> List[str]:
 def supports_open_tracking(campaign: Dict[str, Any]) -> bool:
     return all(channel == "email" for channel in get_campaign_channels(campaign))
 
+from pydantic import BaseModel
+
+class SpamCheckRequest(BaseModel):
+    subject: str
+    template_id: str
+
+@router.post("/check-spam")
+async def check_spam(request: SpamCheckRequest):
+    db = get_database()
+    try:
+        template = await db["templates"].find_one({"_id": ObjectId(request.template_id)})
+    except Exception:
+        template = await db["templates"].find_one({"_id": request.template_id})
+        
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+        
+    from src.ai.spam_detector import analyze_spam_score
+    from src.communication.messaging_service import html_to_text
+    
+    subject = request.subject or template.get("subject", "")
+    text_content = html_to_text(template.get("body_html", ""))
+    channel = template.get("channel", "email")
+    
+    spam_result = await analyze_spam_score(subject, text_content, channel)
+    return spam_result
+
 @router.post("/", response_model=CampaignResponse, status_code=status.HTTP_201_CREATED)
 async def create_campaign(
     campaign_in: CampaignCreate,

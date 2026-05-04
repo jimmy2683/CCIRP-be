@@ -42,6 +42,30 @@ async def test_spam_detection():
         assert safe_res["is_spam"] is False, "Expected safe email to NOT be classified as spam"
         assert safe_res["score"] < 0.7, "Expected safe score to be < 0.7"
         
+        # 3. Test sms spam
+        sms_body = "URGENT: Your bank account is locked. Click http://bit.ly/scam to unlock NOW!"
+        print(f"\nTesting spam sms: Body='{sms_body}'")
+        
+        mock_response_sms = AsyncMock()
+        mock_response_sms.text = '{"is_spam": true, "score": 0.99, "reason": "Phishing link and fake urgency"}'
+        mock_model.generate_content_async.return_value = mock_response_sms
+        
+        sms_res = await analyze_spam_score("", sms_body, "sms")
+        print(f"Result: {sms_res}")
+        assert sms_res["is_spam"] is True, "Expected sms spam to be classified as spam"
+        
+        # 4. Test safe whatsapp
+        wa_body = "Hi, your appointment for tomorrow at 10 AM is confirmed. See you then!"
+        print(f"\nTesting safe whatsapp: Body='{wa_body}'")
+        
+        mock_response_wa = AsyncMock()
+        mock_response_wa.text = '{"is_spam": false, "score": 0.05, "reason": "Standard appointment confirmation"}'
+        mock_model.generate_content_async.return_value = mock_response_wa
+        
+        wa_res = await analyze_spam_score("", wa_body, "whatsapp")
+        print(f"Result: {wa_res}")
+        assert wa_res["is_spam"] is False, "Expected safe whatsapp to NOT be classified as spam"
+        
         print("\nAll spam detection tests passed successfully!")
 
 if __name__ == "__main__":

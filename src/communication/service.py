@@ -555,7 +555,8 @@ async def enqueue_campaign_recipients(campaign_id: str) -> int:
     if template:
         subject = campaign.get("subject") or template.get("subject", "")
         text_content = html_to_text(template.get("body_html", ""))
-        spam_result = await analyze_spam_score(subject, text_content)
+        channel = template.get("channel", "email")
+        spam_result = await analyze_spam_score(subject, text_content, channel)
         if spam_result.get("is_spam"):
             await db["campaigns"].update_one(
                 _campaign_query(campaign_id),

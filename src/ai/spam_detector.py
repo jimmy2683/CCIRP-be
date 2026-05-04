@@ -1,14 +1,14 @@
 import json
 from src.ai.service import _get_model
 
-async def analyze_spam_score(subject: str, content: str) -> dict:
+async def analyze_spam_score(subject: str, content: str, channel: str = "email") -> dict:
     """
-    Analyzes the subject and content of an email for spam using the generative AI model.
+    Analyzes the subject and content of a message for spam using the generative AI model.
     Returns a dictionary with keys: is_spam (bool), score (float), reason (str).
     """
     prompt = f"""
-You are a highly sensitive email spam filter, similar to Gmail's spam detection.
-Analyze the following email subject and body.
+You are a highly sensitive {channel} spam filter.
+Analyze the following {channel} message.
 Determine if it is spam or not.
 Provide a spam score from 0.0 to 1.0, where 1.0 means highly likely to be spam, and 0.0 means definitely not spam.
 If the score is >= 0.7, consider it spam.

@@ -187,6 +187,42 @@ GEMINI_TOOLS = [
         ),
 
         genai.protos.FunctionDeclaration(
+            name="get_engagement_heatmap",
+            description=(
+                "Analyse when the user's audience actually opens and clicks emails by aggregating all "
+                "tracked open and click events across every campaign. Returns counts broken down by "
+                "hour-of-day (0–23 UTC) and day-of-week, plus a ranked list of the top engagement "
+                "windows. Use this to recommend the best send time for a campaign."
+            ),
+            parameters=genai.protos.Schema(
+                type=genai.protos.Type.OBJECT,
+                properties={
+                    "channel": genai.protos.Schema(type=genai.protos.Type.STRING, description="Filter by channel: 'email', 'sms', 'whatsapp'. Omit for all channels."),
+                    "tag": genai.protos.Schema(type=genai.protos.Type.STRING, description="Filter to events from campaigns with this tag only."),
+                    "event_type": genai.protos.Schema(type=genai.protos.Type.STRING, description="'open', 'click', or omit for both."),
+                },
+                required=[],
+            ),
+        ),
+
+        genai.protos.FunctionDeclaration(
+            name="get_campaign_send_performance",
+            description=(
+                "Return per-campaign send timing and engagement metrics: when each campaign was sent, "
+                "its open rate, click rate, and average time-to-first-open in hours. Use alongside "
+                "get_engagement_heatmap to correlate send time choices with actual performance."
+            ),
+            parameters=genai.protos.Schema(
+                type=genai.protos.Type.OBJECT,
+                properties={
+                    "limit": genai.protos.Schema(type=genai.protos.Type.INTEGER, description="Max campaigns to return (default 20)."),
+                    "channel": genai.protos.Schema(type=genai.protos.Type.STRING, description="Filter by channel: 'email', 'sms', 'whatsapp'. Omit for all."),
+                },
+                required=[],
+            ),
+        ),
+
+        genai.protos.FunctionDeclaration(
             name="create_template",
             description=(
                 "Create a new message template and save it to the user's custom templates. "
@@ -432,6 +468,157 @@ async def _create_static_group(user_id: str, name: str, recipient_ids: list, des
     return {"id": result["id"], "name": result["name"], "recipient_count": result["recipient_count"], "message": f"Group '{name}' created with {result['recipient_count']} recipients."}
 
 
+_DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]  # $dayOfWeek: 1=Sun
+
+
+async def _get_engagement_heatmap(
+    user_id: str,
+    channel: str = None,
+    tag: str = None,
+    event_type: str = None,
+) -> dict:
+    db = get_database()
+
+    match: dict = {"owner_user_id": user_id, "is_unique": True}
+    if event_type and event_type in ("open", "click"):
+        match["event_type"] = event_type
+    else:
+        match["event_type"] = {"$in": ["open", "click"]}
+    if channel:
+        match["channel"] = str(channel).lower().strip()
+    if tag:
+        match["campaign_tag_keys"] = {"$elemMatch": {"$regex": str(tag).strip(), "$options": "i"}}
+
+    # Aggregate by day-of-week (1=Sun…7=Sat) and hour (0–23), both in UTC
+    pipeline = [
+        {"$match": match},
+        {"$group": {
+            "_id": {
+                "dow": {"$dayOfWeek": "$ts"},
+                "hour": {"$hour": "$ts"},
+                "event_type": "$event_type",
+            },
+            "count": {"$sum": 1},
+        }},
+    ]
+    rows = await db["email_events"].aggregate(pipeline).to_list(length=None)
+
+    # Reshape into hour_summary and day_summary
+    hour_totals: dict[int, dict] = {h: {"hour": h, "opens": 0, "clicks": 0} for h in range(24)}
+    day_totals: dict[int, dict] = {d: {"day": _DAY_NAMES[d - 1], "opens": 0, "clicks": 0} for d in range(1, 8)}
+
+    for row in rows:
+        dow = row["_id"]["dow"]
+        hour = row["_id"]["hour"]
+        et = row["_id"]["event_type"]
+        count = row["count"]
+        key = "opens" if et == "open" else "clicks"
+        hour_totals[hour][key] += count
+        day_totals[dow][key] += count
+
+    hour_list = sorted(hour_totals.values(), key=lambda x: x["opens"] + x["clicks"], reverse=True)
+    day_list = sorted(day_totals.values(), key=lambda x: x["opens"] + x["clicks"], reverse=True)
+
+    total_opens = sum(h["opens"] for h in hour_list)
+    total_clicks = sum(h["clicks"] for h in hour_list)
+
+    # Top 5 windows (hour + day combinations)
+    combo_totals: dict[tuple, dict] = {}
+    for row in rows:
+        dow = row["_id"]["dow"]
+        hour = row["_id"]["hour"]
+        et = row["_id"]["event_type"]
+        key = (dow, hour)
+        if key not in combo_totals:
+            combo_totals[key] = {"day": _DAY_NAMES[dow - 1], "hour": hour, "opens": 0, "clicks": 0}
+        combo_totals[key]["opens" if et == "open" else "clicks"] += row["count"]
+
+    top_windows = sorted(combo_totals.values(), key=lambda x: x["opens"] + x["clicks"], reverse=True)[:5]
+
+    return {
+        "total_unique_opens": total_opens,
+        "total_unique_clicks": total_clicks,
+        "note": "All times are UTC. Recommend converting to your audience's local timezone.",
+        "top_windows": top_windows,
+        "by_hour": hour_list,
+        "by_day": day_list,
+    }
+
+
+async def _get_campaign_send_performance(
+    user_id: str,
+    limit: int = 20,
+    channel: str = None,
+) -> dict:
+    db = get_database()
+    limit = min(int(limit), 50)
+
+    match: dict = {"owner_user_id": user_id}
+    if channel:
+        match["channel"] = str(channel).lower().strip()
+
+    pipeline = [
+        {"$match": match},
+        {"$group": {
+            "_id": "$campaign_id",
+            "total_recipients": {"$sum": 1},
+            "delivered": {"$sum": {"$ifNull": ["$delivery_count", 0]}},
+            "unique_opens": {"$sum": {"$ifNull": ["$unique_open_count", 0]}},
+            "unique_clicks": {"$sum": {"$ifNull": ["$unique_click_count", 0]}},
+            "first_delivered_at": {"$min": "$first_delivered_at"},
+            "avg_open_lag_ms": {
+                "$avg": {
+                    "$cond": [
+                        {"$and": [
+                            {"$gt": ["$last_open_at", None]},
+                            {"$gt": ["$first_delivered_at", None]},
+                        ]},
+                        {"$subtract": ["$last_open_at", "$first_delivered_at"]},
+                        None,
+                    ]
+                }
+            },
+        }},
+        {"$sort": {"first_delivered_at": -1}},
+        {"$limit": limit},
+    ]
+    stats = await db["campaign_recipient_stats"].aggregate(pipeline).to_list(length=limit)
+
+    # Fetch campaign names in one query
+    campaign_ids = [r["_id"] for r in stats if r["_id"] and ObjectId.is_valid(r["_id"])]
+    campaigns_map = {}
+    if campaign_ids:
+        camp_docs = await db["campaigns"].find(
+            {"_id": {"$in": [ObjectId(cid) for cid in campaign_ids]}},
+            {"_id": 1, "name": 1, "scheduled_at": 1, "created_at": 1, "channels": 1},
+        ).to_list(length=limit)
+        campaigns_map = {str(c["_id"]): c for c in camp_docs}
+
+    out = []
+    for r in stats:
+        cid = r["_id"]
+        camp = campaigns_map.get(cid, {})
+        delivered = r.get("delivered") or 0
+        opens = r.get("unique_opens") or 0
+        clicks = r.get("unique_clicks") or 0
+        sent_at = camp.get("scheduled_at") or r.get("first_delivered_at") or camp.get("created_at")
+        avg_lag_h = round(r["avg_open_lag_ms"] / 3_600_000, 1) if r.get("avg_open_lag_ms") else None
+        out.append({
+            "campaign_id": cid,
+            "name": camp.get("name", cid),
+            "channels": camp.get("channels") or [],
+            "sent_at": _dt(sent_at),
+            "delivered": delivered,
+            "unique_opens": opens,
+            "unique_clicks": clicks,
+            "open_rate_pct": round(opens / delivered * 100, 1) if delivered else 0,
+            "click_rate_pct": round(clicks / delivered * 100, 1) if delivered else 0,
+            "avg_time_to_open_hours": avg_lag_h,
+        })
+
+    return {"campaigns": out, "count": len(out)}
+
+
 async def _create_template(
     user_id: str,
     name: str,
@@ -535,6 +722,8 @@ _REGISTRY = {
     "get_analytics_overview": _get_analytics_overview,
     "create_static_group": _create_static_group,
     "save_dynamic_preference": _save_dynamic_preference,
+    "get_engagement_heatmap": _get_engagement_heatmap,
+    "get_campaign_send_performance": _get_campaign_send_performance,
     "create_template": _create_template,
 }
 

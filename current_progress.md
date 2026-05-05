@@ -56,4 +56,3 @@
 ## Immediate Next Steps
 - Implement logic for the scaffolded Notification and Reminder services.
 - Develop AI-based scheduling and prioritization logic.
-- Integrate CRON/Task Queues for `scheduled_at` asynchronous campaign dispatching.

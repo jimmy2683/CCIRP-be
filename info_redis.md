@@ -4,7 +4,7 @@ This document explains how to use Redis for caching and storage in the CCIRP-be 
 
 ## Configuration
 Redis settings are managed in `src/config.py`.
-- **Redis URL**: Default: `redis://localhost:6373/0` (Note: Database 0 is used for general purpose, while Database 1 is typically used by Celery).
+- **Redis URL**: Default: `redis://localhost:6379/0` (Note: Database 0 is used for general purpose, while Database 1 is typically used by Celery).
 
 ## Utility Classes
 The `RedisManager` class in `src/redis_utils.py` provides simple methods for common Redis operations.
@@ -34,7 +34,7 @@ if redis_manager.exists("my_key"):
 ## Running Redis Locally
 You can run Redis using Docker:
 ```bash
-docker run --name ccirp-redis -p 6373:6379 -d redis
+docker run --name ccirp-redis -p 6379:6379 -d redis
 ```
 Make sure it matches the `REDIS_URL` in your `.env` or `config.py`.
 

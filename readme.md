@@ -18,7 +18,7 @@ The backend is responsible for:
 ## Tech Stack
 
 * **FastAPI** – High-performance Python API framework
-* **Python 3.13** – Latest Python runtime
+* **Python 3.10** – Runtime version
 * **MongoDB** – Primary NoSQL database for flexible data storage
 * **Motor** – High-performance asynchronous MongoDB driver
 * **ObjectId Serialization**: Integrated robust type checking and string casting for BSON ObjectIDs.
@@ -52,9 +52,6 @@ backend
 │   ├── dev.txt           # Development dependencies
 │   └── prod.txt          # Production dependencies
 │
-├── alembic               # Database migration scripts
-├── logs                  # Application logs
-├── templates             # Email / message templates
 └── README.md
 ```
 
@@ -228,21 +225,8 @@ SMTP_SSL=False
 
 ---
 
-## Logging
-
-Application logs are stored in:
-
-```
-backend/logs
-```
-
-Logs help with debugging and monitoring system activity.
-
----
-
 ## Future Improvements
 
-* WhatsApp and SMS notifications
 * AI-based scheduling optimization
 * Push notification support
 * Docker containerization

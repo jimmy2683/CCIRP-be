@@ -223,11 +223,29 @@ GEMINI_TOOLS = [
         ),
 
         genai.protos.FunctionDeclaration(
+            name="get_template_detail",
+            description="Fetch the full content of a template by ID, including body_html. Call this before updating a template so you can see what is already there.",
+            parameters=genai.protos.Schema(
+                type=genai.protos.Type.OBJECT,
+                properties={
+                    "template_id": genai.protos.Schema(type=genai.protos.Type.STRING, description="MongoDB template ID from list_templates"),
+                },
+                required=["template_id"],
+            ),
+        ),
+
+        genai.protos.FunctionDeclaration(
             name="create_template",
             description=(
                 "Create a new message template and save it to the user's custom templates. "
-                "Generate complete, production-ready HTML for email templates or plain text for SMS/WhatsApp. "
-                "Use {{name}}, {{email}}, {{role}}, {{location}}, {{incident_type}}, {{timestamp}} as merge fields. "
+                "Write complete, visually rich, production-ready content. "
+                "For email: full HTML with inline CSS — use a clean layout, branded colours, clear hierarchy, "
+                "and a compelling call-to-action. "
+                "For SMS/WhatsApp: tight, friendly plain text with a clear action. "
+                "Dynamic merge fields available: {{name}} (recipient full name), {{email}}, {{role}}, "
+                "{{location}}, {{incident_type}}, {{timestamp}}. "
+                "Weave merge fields naturally into subject lines, greetings, and body copy — "
+                "personalisation dramatically improves open and click rates. "
                 "The template is immediately accessible in the Templates section after creation."
             ),
             parameters=genai.protos.Schema(
@@ -236,10 +254,31 @@ GEMINI_TOOLS = [
                     "name": genai.protos.Schema(type=genai.protos.Type.STRING, description="Template name, e.g. 'Monthly Newsletter'"),
                     "category": genai.protos.Schema(type=genai.protos.Type.STRING, description="Category, e.g. 'Marketing', 'Academic', 'Alert', 'Transactional'"),
                     "channel": genai.protos.Schema(type=genai.protos.Type.STRING, description="Delivery channel: 'email', 'sms', or 'whatsapp'"),
-                    "subject": genai.protos.Schema(type=genai.protos.Type.STRING, description="Email subject line (required for email channel)"),
-                    "body_html": genai.protos.Schema(type=genai.protos.Type.STRING, description="Full HTML body for email, or plain text for SMS/WhatsApp. Include inline styles for email."),
+                    "subject": genai.protos.Schema(type=genai.protos.Type.STRING, description="Email subject line — make it specific and personal, e.g. 'Hi {{name}}, your update is here'"),
+                    "body_html": genai.protos.Schema(type=genai.protos.Type.STRING, description="Full HTML body for email with inline styles, or plain text for SMS/WhatsApp."),
                 },
                 required=["name", "category", "channel", "body_html"],
+            ),
+        ),
+
+        genai.protos.FunctionDeclaration(
+            name="update_template",
+            description=(
+                "Update an existing custom template. Call get_template_detail first to read the current content, "
+                "then supply only the fields you are changing. "
+                "Apply the same quality bar as create_template: rich HTML, thorough use of merge fields, "
+                "polished copy. The template version is incremented automatically."
+            ),
+            parameters=genai.protos.Schema(
+                type=genai.protos.Type.OBJECT,
+                properties={
+                    "template_id": genai.protos.Schema(type=genai.protos.Type.STRING, description="MongoDB ID of the template to update"),
+                    "name": genai.protos.Schema(type=genai.protos.Type.STRING, description="New template name (omit to keep existing)"),
+                    "category": genai.protos.Schema(type=genai.protos.Type.STRING, description="New category (omit to keep existing)"),
+                    "subject": genai.protos.Schema(type=genai.protos.Type.STRING, description="New email subject line (omit to keep existing)"),
+                    "body_html": genai.protos.Schema(type=genai.protos.Type.STRING, description="Full updated HTML or plain text body (omit to keep existing)"),
+                },
+                required=["template_id"],
             ),
         ),
 
@@ -619,6 +658,83 @@ async def _get_campaign_send_performance(
     return {"campaigns": out, "count": len(out)}
 
 
+async def _get_template_detail(user_id: str, template_id: str) -> dict:
+    db = get_database()
+    if not ObjectId.is_valid(template_id):
+        return {"error": "Invalid template ID"}
+    t = await db["templates"].find_one(
+        {"_id": ObjectId(template_id), "$or": [{"created_by": user_id}, {"is_common": True}]}
+    )
+    if not t:
+        return {"error": "Template not found"}
+    return {
+        "id": str(t["_id"]),
+        "name": t["name"],
+        "category": t.get("category", ""),
+        "channel": t.get("channel", "email"),
+        "subject": t.get("subject"),
+        "body_html": t.get("body_html", ""),
+        "is_common": t.get("is_common", False),
+        "version": t.get("version", 1),
+        "created_by": t.get("created_by"),
+    }
+
+
+async def _update_template(
+    user_id: str,
+    template_id: str,
+    name: str = None,
+    category: str = None,
+    subject: str = None,
+    body_html: str = None,
+) -> dict:
+    db = get_database()
+    if not ObjectId.is_valid(template_id):
+        return {"error": "Invalid template ID"}
+
+    t = await db["templates"].find_one({"_id": ObjectId(template_id), "created_by": user_id})
+    if not t:
+        return {"error": "Template not found or you do not own it"}
+
+    update: dict = {"updated_at": datetime.utcnow()}
+    if name is not None:
+        update["name"] = str(name).strip()
+    if category is not None:
+        update["category"] = str(category).strip()
+    if subject is not None:
+        update["subject"] = str(subject).strip()
+    if body_html is not None:
+        update["body_html"] = body_html
+
+    if len(update) == 1:  # only updated_at — nothing to change
+        return {"error": "No fields provided to update"}
+
+    # Archive current version to template_history before overwriting
+    await db["template_history"].insert_one({
+        "template_id": ObjectId(template_id),
+        "version": t.get("version", 1),
+        "name": t["name"],
+        "subject": t.get("subject"),
+        "body_html": t.get("body_html", ""),
+        "design_json": t.get("design_json"),
+        "updated_at": t.get("updated_at", datetime.utcnow()),
+        "saved_at": datetime.utcnow(),
+    })
+
+    await db["templates"].update_one(
+        {"_id": ObjectId(template_id)},
+        {"$set": update, "$inc": {"version": 1}},
+    )
+
+    new_version = t.get("version", 1) + 1
+    return {
+        "id": template_id,
+        "name": update.get("name", t["name"]),
+        "version": new_version,
+        "message": f"Template updated to version {new_version}.",
+    }
+
+
 async def _create_template(
     user_id: str,
     name: str,
@@ -724,7 +840,9 @@ _REGISTRY = {
     "save_dynamic_preference": _save_dynamic_preference,
     "get_engagement_heatmap": _get_engagement_heatmap,
     "get_campaign_send_performance": _get_campaign_send_performance,
+    "get_template_detail": _get_template_detail,
     "create_template": _create_template,
+    "update_template": _update_template,
 }
 
 

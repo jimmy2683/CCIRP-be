@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from typing import Dict, Any
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
@@ -154,13 +154,18 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
             if isinstance(camp.get("created_at"), datetime) else "N/A"
         })
 
+    unsub_total = await db["email_events"].count_documents({
+        "owner_user_id": user_id,
+        "event_type": "unsubscribe",
+    })
+
     return {
         "total_campaigns": total_campaigns,
         "messages_sent": f"{total_sent}" if total_sent < 1000 else f"{total_sent/1000:.1f}K",
         "avg_open_rate": f"{round((stats['unique_opens'] / total_sent * 100), 1) if total_sent > 0 else 0}%",
         "avg_click_rate": f"{round((stats['unique_clicks'] / total_sent * 100), 1) if total_sent > 0 else 0}%",
         "bounce_rate": f"{round((failed_total / total_sent * 100), 1) if total_sent > 0 else 0}%",
-        "unsubscribe_rate": "0.0%",
+        "unsubscribe_rate": f"{round((unsub_total / total_sent * 100), 1) if total_sent > 0 else 0}%",
         "trend_data": trend_data,
         "campaign_performance": performance,
         "recent_campaigns": performance
@@ -367,3 +372,115 @@ async def export_campaign_analytics(campaign_id: str, current_user: dict = Depen
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=campaign_{campaign_id}_analytics.csv"}
     )
+
+
+@router.get("/campaigns/{campaign_id}/links", response_model=Dict[str, Any])
+async def get_campaign_link_analytics(campaign_id: str, current_user: dict = Depends(get_current_active_user)):
+    db = get_database()
+
+    try:
+        camp_query = {"_id": ObjectId(campaign_id)}
+    except Exception:
+        camp_query = {"_id": campaign_id}
+
+    campaign = await db["campaigns"].find_one(camp_query, {"created_by": 1})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign["created_by"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    pipeline = [
+        {"$match": {"campaign_id": campaign_id, "event_type": "click", "link_url": {"$ne": None}}},
+        {"$group": {
+            "_id": "$link_url",
+            "total_clicks": {"$sum": 1},
+            "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}},
+            "last_clicked_at": {"$max": "$ts"},
+        }},
+        {"$sort": {"total_clicks": -1}},
+        {"$limit": 50},
+    ]
+    results = await db["email_events"].aggregate(pipeline).to_list(length=50)
+
+    return {
+        "campaign_id": campaign_id,
+        "links": [
+            {
+                "url": r["_id"],
+                "total_clicks": r["total_clicks"],
+                "unique_clicks": r["unique_clicks"],
+                "last_clicked_at": r["last_clicked_at"].isoformat() if r.get("last_clicked_at") else None,
+            }
+            for r in results
+        ],
+    }
+
+
+@router.get("/recipients/{recipient_id}", response_model=Dict[str, Any])
+async def get_recipient_engagement_history(
+    recipient_id: str,
+    limit: int = Query(default=20, le=100),
+    current_user: dict = Depends(get_current_active_user),
+):
+    db = get_database()
+
+    try:
+        rec_query = {"_id": ObjectId(recipient_id), "user_id": current_user["id"]}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid recipient ID")
+
+    recipient = await db["recipients"].find_one(rec_query)
+    if not recipient:
+        raise HTTPException(status_code=404, detail="Recipient not found")
+
+    recipient_email = recipient["email"]
+
+    stats_cursor = db["campaign_recipient_stats"].find(
+        {"recipient_email": recipient_email, "owner_user_id": current_user["id"]},
+        {"campaign_id": 1, "delivery_status": 1, "open_count": 1, "unique_open_count": 1,
+         "click_count": 1, "unique_click_count": 1, "last_open_at": 1, "last_click_at": 1,
+         "delivery_failure_count": 1, "created_at": 1},
+    ).sort("created_at", -1).limit(limit)
+    stats_list = await stats_cursor.to_list(length=limit)
+
+    campaign_ids = list({s["campaign_id"] for s in stats_list})
+    campaigns_cursor = db["campaigns"].find(
+        {"_id": {"$in": [ObjectId(cid) for cid in campaign_ids if ObjectId.is_valid(cid)]}},
+        {"_id": 1, "name": 1, "created_at": 1, "channels": 1, "tags": 1},
+    )
+    campaigns_map = {str(c["_id"]): c for c in await campaigns_cursor.to_list(length=len(campaign_ids))}
+
+    history = []
+    for s in stats_list:
+        camp = campaigns_map.get(s["campaign_id"], {})
+        history.append({
+            "campaign_id": s["campaign_id"],
+            "campaign_name": camp.get("name", "Unknown Campaign"),
+            "campaign_channels": camp.get("channels", []),
+            "campaign_tags": camp.get("tags", []),
+            "campaign_sent_at": camp.get("created_at").isoformat() if camp.get("created_at") else None,
+            "delivery_status": s.get("delivery_status", "pending"),
+            "open_count": s.get("open_count", 0),
+            "unique_open_count": s.get("unique_open_count", 0),
+            "click_count": s.get("click_count", 0),
+            "unique_click_count": s.get("unique_click_count", 0),
+            "last_open_at": s["last_open_at"].isoformat() if s.get("last_open_at") else None,
+            "last_click_at": s["last_click_at"].isoformat() if s.get("last_click_at") else None,
+        })
+
+    eng = recipient.get("engagement", {})
+    return {
+        "recipient_id": recipient_id,
+        "email": recipient_email,
+        "engagement_summary": {
+            "open_count_total": eng.get("open_count_total", 0),
+            "click_count_total": eng.get("click_count_total", 0),
+            "bounce_count": eng.get("bounce_count", 0),
+            "delivery_failure_count": eng.get("delivery_failure_count", 0),
+            "last_open_at": eng["last_open_at"].isoformat() if eng.get("last_open_at") else None,
+            "last_click_at": eng["last_click_at"].isoformat() if eng.get("last_click_at") else None,
+            "last_bounced_at": eng["last_bounced_at"].isoformat() if eng.get("last_bounced_at") else None,
+            "unsubscribed_at": eng["unsubscribed_at"].isoformat() if eng.get("unsubscribed_at") else None,
+        },
+        "campaign_history": history,
+    }

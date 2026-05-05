@@ -11,6 +11,8 @@ class ConsentFlagsSchema(BaseModel):
 class EngagementStatsSchema(BaseModel):
     open_count_total: int = 0
     click_count_total: int = 0
+    bounce_count: int = 0
+    delivery_failure_count: int = 0
     unique_open_campaigns: List[str] = []
     unique_click_campaigns: List[str] = []
     clicked_domains: List[str] = []
@@ -19,6 +21,8 @@ class EngagementStatsSchema(BaseModel):
     topic_scores: Dict[str, int] = {}
     last_open_at: Optional[datetime] = None
     last_click_at: Optional[datetime] = None
+    last_bounced_at: Optional[datetime] = None
+    unsubscribed_at: Optional[datetime] = None
 
 class RecipientCreate(BaseModel):
     email: EmailStr

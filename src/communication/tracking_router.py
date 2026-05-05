@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, Response
 
@@ -89,14 +91,17 @@ async def track_unsubscribe(token: str, request: Request):
     recipient_email = str(payload["r"])
     owner_id = str(payload["o"])
 
+    now = datetime.now(timezone.utc)
     await db["recipients"].update_many(
         {"email": recipient_email, "user_id": owner_id},
         {"$set": {
-            "status": "unsubscribed", 
-            "consent_flags.email": False, 
-            "consent_flags.sms": False, 
-            "consent_flags.whatsapp": False
-        }}
+            "status": "unsubscribed",
+            "consent_flags.email": False,
+            "consent_flags.sms": False,
+            "consent_flags.whatsapp": False,
+            "engagement.unsubscribed_at": now,
+            "updated_at": now,
+        }},
     )
 
     from fastapi.responses import HTMLResponse

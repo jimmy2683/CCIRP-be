@@ -132,6 +132,26 @@ async def record_delivery_event(
         upsert=True,
     )
 
+    if not delivered:
+        recipient = await db["recipients"].find_one(
+            {"user_id": owner_user_id, "email": recipient_email},
+            {"_id": 1},
+        )
+        if recipient:
+            await db["recipients"].update_one(
+                {"_id": recipient["_id"]},
+                {
+                    "$inc": {
+                        "engagement.bounce_count": 1,
+                        "engagement.delivery_failure_count": 1,
+                    },
+                    "$set": {
+                        "engagement.last_bounced_at": now,
+                        "updated_at": now,
+                    },
+                },
+            )
+
 
 async def record_engagement_event(
     *,

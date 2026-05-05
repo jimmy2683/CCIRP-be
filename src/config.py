@@ -50,14 +50,14 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = ""
 
     # Celery Settings
-    CELERY_BROKER_URL: str = "redis://localhost:6373/1"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6373/1"
-    
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
+
     # Kafka Settings
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
-    
+
     # Redis Settings
-    REDIS_URL: str = "redis://localhost:6373/0"
+    REDIS_URL: str = "redis://localhost:6379/0"
 
     # Background scheduler settings
     CAMPAIGN_SCHEDULER_INTERVAL_SECONDS: int = 15

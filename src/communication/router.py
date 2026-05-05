@@ -143,13 +143,33 @@ async def create_campaign(
         campaign_id = str(result.inserted_id)
         campaign_dict["id"] = campaign_id
 
-        if has_audience and campaign_payload["status"] == "queued":
-            background_tasks.add_task(
-                prepare_campaign_priority_dispatch,
+        if has_audience:
+            from src.events import publish_campaign_event
+            publish_campaign_event(
+                "campaign_created",
                 campaign_id,
-                True,
+                {
+                    "name": campaign_dict.get("name"),
+                    "status": campaign_payload.get("status", "draft"),
+                    "channels": campaign_payload.get("channels", []),
+                },
             )
-        
+
+        if has_audience and campaign_payload["status"] == "queued":
+            dispatched_via_celery = False
+            try:
+                from src.utils.tasks import dispatch_campaign_task
+                dispatch_campaign_task.delay(campaign_id)
+                dispatched_via_celery = True
+            except Exception:
+                pass
+            if not dispatched_via_celery:
+                background_tasks.add_task(
+                    prepare_campaign_priority_dispatch,
+                    campaign_id,
+                    True,
+                )
+
         return campaign_dict
     except Exception as e:
         print(f"ERROR creating campaign: {str(e)}")

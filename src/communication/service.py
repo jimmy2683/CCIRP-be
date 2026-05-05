@@ -917,6 +917,15 @@ async def _process_priority_queue_job(job: dict) -> None:
             channel=channel,
         )
 
+        from src.events import publish_delivery_event
+        publish_delivery_event(
+            campaign_id=campaign_id,
+            recipient_email=recipient_email,
+            channel=channel,
+            delivered=success,
+            error_message=None if success else message,
+        )
+
         if not success:
             channel_failures += 1
 

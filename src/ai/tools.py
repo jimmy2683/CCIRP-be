@@ -186,6 +186,27 @@ GEMINI_TOOLS = [
             ),
         ),
 
+        genai.protos.FunctionDeclaration(
+            name="create_template",
+            description=(
+                "Create a new message template and save it to the user's custom templates. "
+                "Generate complete, production-ready HTML for email templates or plain text for SMS/WhatsApp. "
+                "Use {{name}}, {{email}}, {{role}}, {{location}}, {{incident_type}}, {{timestamp}} as merge fields. "
+                "The template is immediately accessible in the Templates section after creation."
+            ),
+            parameters=genai.protos.Schema(
+                type=genai.protos.Type.OBJECT,
+                properties={
+                    "name": genai.protos.Schema(type=genai.protos.Type.STRING, description="Template name, e.g. 'Monthly Newsletter'"),
+                    "category": genai.protos.Schema(type=genai.protos.Type.STRING, description="Category, e.g. 'Marketing', 'Academic', 'Alert', 'Transactional'"),
+                    "channel": genai.protos.Schema(type=genai.protos.Type.STRING, description="Delivery channel: 'email', 'sms', or 'whatsapp'"),
+                    "subject": genai.protos.Schema(type=genai.protos.Type.STRING, description="Email subject line (required for email channel)"),
+                    "body_html": genai.protos.Schema(type=genai.protos.Type.STRING, description="Full HTML body for email, or plain text for SMS/WhatsApp. Include inline styles for email."),
+                },
+                required=["name", "category", "channel", "body_html"],
+            ),
+        ),
+
     ])
 ]
 
@@ -411,6 +432,42 @@ async def _create_static_group(user_id: str, name: str, recipient_ids: list, des
     return {"id": result["id"], "name": result["name"], "recipient_count": result["recipient_count"], "message": f"Group '{name}' created with {result['recipient_count']} recipients."}
 
 
+async def _create_template(
+    user_id: str,
+    name: str,
+    category: str,
+    channel: str,
+    body_html: str,
+    subject: str = None,
+) -> dict:
+    db = get_database()
+    channel = str(channel).lower().strip()
+    doc = {
+        "name": str(name).strip(),
+        "category": str(category).strip(),
+        "channel": channel,
+        "subject": str(subject).strip() if subject else None,
+        "body_html": body_html,
+        "design_json": None,
+        "is_common": False,
+        "created_by": user_id,
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+        "version": 1,
+    }
+    result = await db["templates"].insert_one(doc)
+    template_id = str(result.inserted_id)
+    return {
+        "id": template_id,
+        "name": doc["name"],
+        "category": doc["category"],
+        "channel": doc["channel"],
+        "subject": doc["subject"],
+        "version": 1,
+        "message": f"Template '{doc['name']}' created and saved to your custom templates.",
+    }
+
+
 async def _save_dynamic_preference(user_id: str, tag: str, top_k: int, min_interactions: int = 1) -> dict:
     from src.groups.schemas import DynamicGroupPreferenceUpsert, SegmentationRequest, StaticGroupCreate
     from src.groups.service import upsert_dynamic_group_preference as _svc
@@ -478,6 +535,7 @@ _REGISTRY = {
     "get_analytics_overview": _get_analytics_overview,
     "create_static_group": _create_static_group,
     "save_dynamic_preference": _save_dynamic_preference,
+    "create_template": _create_template,
 }
 
 

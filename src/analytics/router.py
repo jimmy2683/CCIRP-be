@@ -96,18 +96,19 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
             "delivered": {"$sum": {"$cond": [{"$eq": ["$event_type", "delivered"]}, 1, 0]}},
             "opened": {"$sum": {"$cond": [{"$eq": ["$event_type", "open"]}, 1, 0]}},
             "clicked": {"$sum": {"$cond": [{"$eq": ["$event_type", "click"]}, 1, 0]}},
+            "unsubscribed": {"$sum": {"$cond": [{"$eq": ["$event_type", "unsubscribe"]}, 1, 0]}},
         }},
         {"$sort": {"_id": 1}}
     ]
     event_results = await db["email_events"].aggregate(event_pipeline).to_list(length=31)
-    
+
     # Merge trend data
     all_dates = sorted(list(set(list(sent_by_date.keys()) + [r["_id"] for r in event_results])))
     trend_data = []
     for d in all_dates:
         ev = next(
             (r for r in event_results if r["_id"] == d),
-            {"delivered": 0, "opened": 0, "clicked": 0},
+            {"delivered": 0, "opened": 0, "clicked": 0, "unsubscribed": 0},
         )
         sent = sent_by_date.get(d, 0)
         trend_data.append({
@@ -115,7 +116,8 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
             "sent": sent,
             "delivered": ev["delivered"],
             "opened": ev["opened"],
-            "clicked": ev["clicked"]
+            "clicked": ev["clicked"],
+            "unsubscribed": ev.get("unsubscribed", 0),
         })
     
     # 4. Recent Campaign Performance
@@ -159,6 +161,24 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
         "event_type": "unsubscribe",
     })
 
+    top_tags_pipeline = [
+        {"$match": {"owner_user_id": user_id, "event_type": {"$in": ["open", "click"]}}},
+        {"$unwind": "$campaign_tag_keys"},
+        {"$group": {
+            "_id": "$campaign_tag_keys",
+            "opens": {"$sum": {"$cond": [{"$eq": ["$event_type", "open"]}, 1, 0]}},
+            "clicks": {"$sum": {"$cond": [{"$eq": ["$event_type", "click"]}, 1, 0]}},
+        }},
+        {"$addFields": {"total": {"$add": ["$opens", "$clicks"]}}},
+        {"$sort": {"total": -1}},
+        {"$limit": 6},
+    ]
+    top_tags_raw = await db["email_events"].aggregate(top_tags_pipeline).to_list(length=6)
+    top_tags = [
+        {"tag": r["_id"], "opens": r["opens"], "clicks": r["clicks"], "total": r["total"]}
+        for r in top_tags_raw if r["_id"]
+    ]
+
     return {
         "total_campaigns": total_campaigns,
         "messages_sent": f"{total_sent}" if total_sent < 1000 else f"{total_sent/1000:.1f}K",
@@ -168,7 +188,8 @@ async def get_analytics_overview(current_user: dict = Depends(get_current_active
         "unsubscribe_rate": f"{round((unsub_total / total_sent * 100), 1) if total_sent > 0 else 0}%",
         "trend_data": trend_data,
         "campaign_performance": performance,
-        "recent_campaigns": performance
+        "recent_campaigns": performance,
+        "top_tags": top_tags,
     }
 
 @router.get("/campaigns/{campaign_id}", response_model=Dict[str, Any])
@@ -290,6 +311,8 @@ async def get_campaign_analytics(campaign_id: str, current_user: dict = Depends(
         })
         
     return {
+        "campaign_name": campaign.get("name", "Campaign"),
+        "campaign_channels": channels,
         "metrics": metrics,
         "supports_open_tracking": open_tracking_enabled,
         "timeline": [
@@ -342,27 +365,33 @@ async def export_campaign_analytics(campaign_id: str, current_user: dict = Depen
     output = io.StringIO()
     writer = csv.writer(output)
     
-    headers = ["Email", "Name", "Delivery Status"]
+    headers = ["Email", "Name", "Delivery Status", "Delivery Failures"]
     if open_tracking_enabled:
-        headers.append("Open Count")
-        headers.append("Opened At")
-    
-    headers.extend(["Click Count", "Clicked At"])
+        headers += ["Open Count", "Unique Opens", "Opened At"]
+    headers += ["Click Count", "Unique Clicks", "Clicked At", "Delivery Error"]
     writer.writerow(headers)
-    
+
     for r in recipients_list:
         email = r["recipient_email"]
         name = recipients_map.get(email) or users_map.get(email, email.split("@")[0])
-        status = r.get("delivery_status", "pending")
-        
-        row = [email, name, status]
+        row = [
+            email,
+            name,
+            r.get("delivery_status", "pending"),
+            str(r.get("delivery_failure_count", 0)),
+        ]
         if open_tracking_enabled:
-            row.append(str(r.get("open_count", 0)))
-            row.append(r.get("last_open_at").isoformat() if r.get("last_open_at") else "")
-            
-        row.append(str(r.get("click_count", 0)))
-        row.append(r.get("last_click_at").isoformat() if r.get("last_click_at") else "")
-        
+            row += [
+                str(r.get("open_count", 0)),
+                str(r.get("unique_open_count", 0)),
+                r["last_open_at"].isoformat() if r.get("last_open_at") else "",
+            ]
+        row += [
+            str(r.get("click_count", 0)),
+            str(r.get("unique_click_count", 0)),
+            r["last_click_at"].isoformat() if r.get("last_click_at") else "",
+            r.get("delivery_error", ""),
+        ]
         writer.writerow(row)
 
     csv_content = output.getvalue()
@@ -371,6 +400,115 @@ async def export_campaign_analytics(campaign_id: str, current_user: dict = Depen
         content=csv_content,
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=campaign_{campaign_id}_analytics.csv"}
+    )
+
+
+@router.get("/campaigns/{campaign_id}/links/export")
+async def export_campaign_link_analytics(campaign_id: str, current_user: dict = Depends(get_current_active_user)):
+    db = get_database()
+
+    try:
+        camp_query = {"_id": ObjectId(campaign_id)}
+    except Exception:
+        camp_query = {"_id": campaign_id}
+
+    campaign = await db["campaigns"].find_one(camp_query, {"created_by": 1, "name": 1})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign["created_by"] != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    pipeline = [
+        {"$match": {"campaign_id": campaign_id, "event_type": "click", "link_url": {"$ne": None}}},
+        {"$group": {
+            "_id": "$link_url",
+            "total_clicks": {"$sum": 1},
+            "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}},
+            "last_clicked_at": {"$max": "$ts"},
+        }},
+        {"$sort": {"total_clicks": -1}},
+    ]
+    results = await db["email_events"].aggregate(pipeline).to_list(length=1000)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["URL", "Total Clicks", "Unique Clicks", "Last Clicked At"])
+    for r in results:
+        writer.writerow([
+            r["_id"],
+            r["total_clicks"],
+            r["unique_clicks"],
+            r["last_clicked_at"].isoformat() if r.get("last_clicked_at") else "",
+        ])
+
+    camp_name = campaign.get("name", campaign_id)
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in camp_name)
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={safe_name}_links.csv"},
+    )
+
+
+@router.get("/overview/export")
+async def export_overview_analytics(current_user: dict = Depends(get_current_active_user)):
+    db = get_database()
+    user_id = current_user["id"]
+
+    user_campaigns_cursor = db["campaigns"].find(
+        {"created_by": user_id},
+        {"_id": 1, "name": 1, "channels": 1, "recipients": 1, "status": 1, "created_at": 1},
+    ).sort("created_at", -1)
+    campaigns = await user_campaigns_cursor.to_list(length=10000)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Campaign", "Date", "Channels", "Status",
+        "Sent", "Delivered", "Delivery Rate %",
+        "Unique Opens", "Open Rate %",
+        "Unique Clicks", "Click Rate %",
+        "Bounces", "Bounce Rate %",
+    ])
+
+    for camp in campaigns:
+        camp_id = str(camp["_id"])
+        channels = get_campaign_channels(camp)
+        sent = len(camp.get("recipients", [])) * max(len(channels), 1)
+
+        agg = await db["campaign_recipient_stats"].aggregate([
+            {"$match": {"campaign_id": camp_id}},
+            {"$group": {
+                "_id": None,
+                "delivered": {"$sum": {"$cond": [{"$eq": ["$delivery_status", "delivered"]}, 1, 0]}},
+                "failed": {"$sum": {"$cond": [{"$eq": ["$delivery_status", "failed"]}, 1, 0]}},
+                "unique_opens": {"$sum": "$unique_open_count"},
+                "unique_clicks": {"$sum": "$unique_click_count"},
+            }},
+        ]).to_list(length=1)
+        s = agg[0] if agg else {"delivered": 0, "failed": 0, "unique_opens": 0, "unique_clicks": 0}
+
+        open_sent = len(camp.get("recipients", [])) if supports_open_tracking(camp) else 0
+        writer.writerow([
+            camp.get("name", "Unnamed"),
+            ensure_aware_datetime(camp.get("created_at")).strftime("%Y-%m-%d") if camp.get("created_at") else "",
+            "/".join(channels),
+            camp.get("status", ""),
+            sent,
+            s["delivered"],
+            f"{round(s['delivered'] / sent * 100, 1) if sent else 0}",
+            s["unique_opens"] if open_sent else "",
+            f"{round(s['unique_opens'] / open_sent * 100, 1) if open_sent else ''}",
+            s["unique_clicks"],
+            f"{round(s['unique_clicks'] / sent * 100, 1) if sent else 0}",
+            s["failed"],
+            f"{round(s['failed'] / sent * 100, 1) if sent else 0}",
+        ])
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=analytics_overview.csv"},
     )
 
 

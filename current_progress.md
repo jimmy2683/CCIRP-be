@@ -242,3 +242,22 @@ src/
 └── utils/
     └── tasks.py             # Celery task definitions
 ```
+
+### 14. Project Documentation
+- **Technical Specifications PDF** (`Technical_Specifications.pdf`): A formal, LaTeX-compiled technical specifications document (20 sections, 70+ subsections) covering:
+  - System architecture and tech stack
+  - Authentication and security (JWT, HMAC tracking tokens)
+  - Complete MongoDB data model with field-level descriptions
+  - Campaign dispatch pipeline with priority scoring algorithm (full mathematical formulation)
+  - Engagement tracking system (open/click/unsubscribe flows)
+  - AI-powered features: conversational agent (17 tools), smart segmentation, spam detection, merge-field autocomplete
+  - Complete API reference for all route groups
+  - Frontend specifications (design system, campaign wizard, template editor, analytics dashboards)
+  - Error handling and resilience (graceful degradation matrix)
+  - Kafka event bus architecture with message schemas
+  - Template engine and versioning pipeline
+  - Concurrency model and database index strategy
+  - Detailed sequence flows (campaign dispatch, AI agent conversation, engagement tracking)
+  - Non-functional requirements (performance, scalability, security, maintainability, observability)
+  - Full MongoDB collection glossary and environment variables reference
+

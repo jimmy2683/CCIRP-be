@@ -41,6 +41,9 @@ src/
 ├── analytics/               # Overview, campaign detail, links, exports
 ├── reminders/               # Reminder scheduling
 └── utils/                   # Celery tasks
+
+Technical_Specifications.pdf   # Formal technical specifications document
+current_progress.md            # Detailed feature progress tracker
 ```
 
 ---
@@ -240,6 +243,13 @@ The backend features a robust suite of AI capabilities powered by Google Gemini:
 - **Kafka `KAFKA_ENABLED=False`**: Set this when Kafka is not running. Without it, librdkafka's background thread retries the broker connection every 30 s and floods stderr.
 - **Gemini thought_signature**: When using thinking models (2.5 Flash, 3.x), function call parts carry a `thought_signature` that must be preserved across tool-call iterations. The agent uses `api_contents` (raw proto objects) for API calls and `db_contents` (plain dicts) for MongoDB storage to avoid stripping this field.
 - **Campaign retry**: Only resets `failed`/`cancelled` queue entries — already-completed sends are not re-sent. The retry endpoint returns 409 for any status other than `failed` or `partially_sent`.
+
+---
+
+## Documentation
+
+- **[Technical_Specifications.pdf](Technical_Specifications.pdf)** — Comprehensive formal technical specifications document covering system architecture, data models, priority scoring algorithm, AI agent internals, dispatch pipeline, tracking system, API reference, sequence flows, non-functional requirements, and all MongoDB collection schemas. Suitable for project evaluation and submission.
+- **[current_progress.md](current_progress.md)** — Detailed feature-by-feature progress tracker with implementation notes.
 
 ---
 

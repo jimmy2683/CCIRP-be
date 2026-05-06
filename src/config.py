@@ -55,6 +55,7 @@ class Settings(BaseSettings):
 
     # Kafka Settings
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
+    KAFKA_ENABLED: bool = True
 
     # Redis Settings
     REDIS_URL: str = "redis://localhost:6379/0"

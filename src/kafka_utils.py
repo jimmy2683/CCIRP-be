@@ -39,6 +39,8 @@ class KafkaManager:
 
     def produce_message(self, topic: str, message: dict) -> bool:
         """Publish a JSON message. Returns True on success, False if Kafka is unavailable."""
+        if not settings.KAFKA_ENABLED:
+            return False
         producer = self._get_producer()
         if producer is None:
             return False

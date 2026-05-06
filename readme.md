@@ -195,6 +195,32 @@ CAMPAIGN_SCHEDULER_INTERVAL_SECONDS=15
 | GET | `/ai/conversations/{id}` | Get conversation |
 | DELETE | `/ai/conversations/{id}` | Delete conversation |
 
+### AI Tools & Capabilities
+
+The backend features a robust suite of AI capabilities powered by Google Gemini:
+
+1. **Conversational Agent (`/ai/chat`)**
+   - A streaming assistant built on `gemini-2.5-flash` with access to the platform's data.
+   - Capable of managing campaigns, querying analytics, exploring recipient engagement, and manipulating templates or groups.
+   - Retains context across tool iterations by preserving the `thought_signature`.
+
+2. **Smart Segmentation & Dynamic Groups**
+   - **Semantic Tag Matching**: Uses cosine similarity to find recipients with tags semantically related to a target segment, automatically broadening audience reach for relevant users.
+   - **Dynamic Ranking**: Ranks recipients by live engagement scores based on tag interactions, resolving the top-K members at dispatch time.
+
+3. **Pre-flight Spam Detection**
+   - Evaluates campaign subject and body content using an AI-driven filter tuned specifically for email, SMS, or WhatsApp.
+   - Calculates a spam score (0.0 to 1.0) and enforces a threshold (>= 0.7) to block campaigns before dispatch, providing a detailed explanation for its decision.
+
+4. **AI Merge Field Autocomplete**
+   - Analyzes campaign context (name, subject, intent description) to generate highly contextual values for custom merge fields (e.g. `{{promo_code}}`, `{{closing}}`) in the template.
+
+5. **Advanced Analytics Tools**
+   - **Engagement Heatmap**: Aggregates all open and click events across campaigns by hour-of-day and day-of-week (UTC) to recommend optimal send times.
+   - **Send Performance**: Correlates historical campaign send times with open rates, click rates, and time-to-first-open.
+
+---
+
 ### Recipients / Groups
 | Method | Path | Description |
 |---|---|---|

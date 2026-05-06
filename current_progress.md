@@ -100,29 +100,39 @@ Fields on `recipients.engagement`:
 - `GET /analytics/campaigns/{id}/links/export` — link analytics CSV.
 - `GET /analytics/overview/export` — all campaigns summary CSV.
 
-#### Engagement Heatmap & Send Performance (AI tools)
-- `get_engagement_heatmap`: opens/clicks by hour-of-day and day-of-week across all events.
-- `get_campaign_send_performance`: per-campaign send timing correlated with open/click rates and avg time-to-first-open.
-
-### 9. AI Agent
+### 9. AI Agent & Tools
 
 #### Conversational Agent (`POST /ai/chat`)
 - Streaming SSE response (`text/event-stream`).
 - Model: `gemini-2.5-flash` (configurable via `MODEL_NAME` in `src/ai/constants.py`). Currently `MAX_TOOL_ITERATIONS = 6`.
 - **Thought-signature fix**: Two parallel content lists — `api_contents` (raw proto `Content` objects, preserves `thought_signature`) and `db_contents` (plain dicts for MongoDB). Gemini 3.x/2.5 thinking models require `thought_signature` to be preserved across tool-call turns; stripping it caused a 400 error.
 - **Nudge call**: If all iterations produced tool calls but no text, one extra call with an explicit prompt recovers the response.
-- Tools available: `search_recipients`, `get_recipient_detail`, `list_campaigns`, `get_campaign_detail`, `list_templates`, `list_static_groups`, `list_dynamic_preferences`, `preview_dynamic_group`, `preview_ai_segmentation`, `get_analytics_overview`, `create_static_group`, `save_dynamic_preference`, `get_engagement_heatmap`, `get_campaign_send_performance`, `get_template_detail`, `create_template`, `update_template`.
-- Conversation history stored in `ai_conversations` collection; max `MAX_CONVERSATION_MESSAGES = 80` messages retained.
+- **Integrated Tools**:
+  - `search_recipients` & `get_recipient_detail`: Look up contacts and their detailed engagement metrics.
+  - `list_campaigns` & `get_campaign_detail`: View campaign histories, statuses, and performance.
+  - `get_analytics_overview`: Summarize platform-wide performance and top tags.
+  - `get_engagement_heatmap`: Aggregate historical open/click data to discover the best times to send emails.
+  - `get_campaign_send_performance`: Correlate historical dispatch times with metrics like time-to-first-open.
+  - `list_templates`, `get_template_detail`, `create_template`, `update_template`: Full lifecycle management of rich HTML or text message templates.
+  - `preview_dynamic_group`, `preview_ai_segmentation`, `list_static_groups`, `create_static_group`: Perform audience exploration and segment building.
+
+#### Smart Segmentation (`preview_ai_segmentation`)
+- AI-powered audience segmentation using semantic similarity between tags.
+- Discovers recipients from conceptually related existing segments (e.g. matching "developer" with "software-engineer" or "backend") via cosine similarity over tag embeddings.
+- Configurable `similarity_threshold` (default `0.15`) balances reach vs precision.
+- Can be saved as a static group or dynamic preference seamlessly.
 
 #### Merge Field AI Fill (`POST /ai/fill-merge-fields`)
 - Non-streaming single Gemini call.
 - Input: `intent` (free text), `campaign_name`, `subject`, `merge_fields[]`.
-- Returns `{ values: { field: suggested_value } }` — only for fields that were requested.
-- Used by the campaign wizard Step 3 AI assist panel.
+- Analyzes context and returns `{ values: { field: suggested_value } }` only for the requested dynamic placeholders.
+- Heavily utilized by the campaign wizard (Step 3) AI assist panel to automate personalized copy.
 
-#### Spam Detector
-- Standalone Gemini call (not part of the agent conversation) that scores subject + body content.
-- Channels: email, SMS, WhatsApp (different heuristics per channel).
+#### Spam Detector (`POST /campaigns/check-spam` & Internal)
+- Standalone prompt evaluation via Gemini that acts as a highly sensitive spam filter.
+- Calculates a floating-point `score` (0.0 to 1.0) based on channel-specific heuristics (email vs SMS vs WhatsApp).
+- Flags messages as `is_spam` if the score exceeds `0.7`, providing a qualitative `reason` string.
+- Integrated natively into the dispatch queue (blocks sends) and manually accessible in the frontend wizard pre-flight checklist.
 
 ### 10. Kafka (Optional Event Bus)
 - Topics: `ccirp.campaign.events`, `ccirp.delivery.events`.

@@ -96,7 +96,7 @@ async def agent_stream(
     had_tool_calls = False
     last_tool_results: list[dict] = []
 
-    for iteration in range(MAX_TOOL_ITERATIONS):
+    for _ in range(MAX_TOOL_ITERATIONS):
         text_accumulated: list[str] = []
         function_calls: list[dict] = []
 
@@ -209,6 +209,45 @@ async def agent_stream(
         saved_id = conversation_id
 
     yield _sse("done", conversation_id=saved_id, title=title)
+
+
+async def fill_merge_fields(
+    intent: str,
+    campaign_name: str,
+    subject: str,
+    merge_fields: list[str],
+) -> dict[str, str]:
+    if not settings.GOOGLE_API_KEY:
+        raise ValueError("GOOGLE_API_KEY is not configured")
+    if not merge_fields:
+        return {}
+
+    fields_list = ", ".join(f"`{f}`" for f in merge_fields)
+    prompt = (
+        f"You are filling in merge field values for a communication campaign.\n\n"
+        f"Campaign name: {campaign_name or '(not set)'}\n"
+        f"Subject: {subject or '(not set)'}\n"
+        f"User intent: {intent}\n\n"
+        f"Fill in the following merge fields with concise, contextually appropriate values.\n"
+        f"Fields: {fields_list}\n\n"
+        f"Reply with ONLY a valid JSON object — no markdown, no explanation. "
+        f"Keys must exactly match the field names. Example:\n"
+        f'{{"role": "Software Engineer", "location": "Hyderabad", "deadline": "May 15, 2026"}}'
+    )
+
+    try:
+        model = _get_model()
+        response = await model.generate_content_async(prompt)
+        raw = response.text.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        result = json.loads(raw.strip())
+        return {k: str(v) for k, v in result.items() if k in merge_fields}
+    except Exception as exc:
+        raise ValueError(f"AI fill failed: {exc}") from exc
 
 
 async def list_conversations(user_id: str, skip: int = 0, limit: int = 50) -> dict:

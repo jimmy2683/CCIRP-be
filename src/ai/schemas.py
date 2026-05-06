@@ -9,6 +9,13 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class FillMergeFieldsRequest(BaseModel):
+    intent: str
+    campaign_name: str = ""
+    subject: str = ""
+    merge_fields: List[str]
+
+
 class ConversationMeta(BaseModel):
     id: str
     title: str

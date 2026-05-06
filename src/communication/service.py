@@ -987,6 +987,53 @@ async def process_campaign_priority_queues_once(campaign_id: Optional[str] = Non
     return processed
 
 
+async def retry_campaign(campaign_id: str) -> int:
+    """Reset failed/cancelled dispatch queue entries to queued and re-arm the campaign."""
+    db = get_database()
+    now = datetime.now(timezone.utc)
+
+    result = await db["campaign_dispatch_queue"].update_many(
+        {
+            "campaign_id": campaign_id,
+            "status": {"$in": ["failed", "cancelled"]},
+        },
+        {
+            "$set": {
+                "status": "queued",
+                "attempts": 0,
+                "delivery_outcome": None,
+                "error_message": None,
+                "updated_at": now,
+            },
+            "$unset": {
+                "processing_started_at": "",
+                "completed_at": "",
+            },
+        },
+    )
+    queued = result.modified_count
+
+    # Determine new campaign status: if any entries are already completed keep
+    # "dispatching" so the scheduler picks up only the re-queued stragglers;
+    # if everything was failed, restart from "queued".
+    completed_count = await db["campaign_dispatch_queue"].count_documents(
+        {"campaign_id": campaign_id, "status": "completed"}
+    )
+    new_status = "dispatching" if completed_count > 0 else "queued"
+
+    await db["campaigns"].update_one(
+        _campaign_query(campaign_id),
+        {
+            "$set": {
+                "status": new_status,
+                "updated_at": now,
+            },
+            "$unset": {"queue_prepared_at": ""},
+        },
+    )
+    return queued
+
+
 async def dispatch_campaign_by_id(campaign_id: str) -> None:
     await enqueue_campaign_recipients(campaign_id)
     while True:

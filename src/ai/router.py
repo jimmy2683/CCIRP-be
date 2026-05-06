@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import StreamingResponse
 
-from src.ai.schemas import ChatRequest, ConversationFull, ConversationMeta
-from src.ai.service import agent_stream, delete_conversation, get_conversation, list_conversations
+from src.ai.schemas import ChatRequest, ConversationFull, ConversationMeta, FillMergeFieldsRequest
+from src.ai.service import agent_stream, delete_conversation, fill_merge_fields, get_conversation, list_conversations
 from src.auth.dependencies import get_current_active_user
 from src.pagination import PaginatedResponse
 
@@ -23,6 +23,24 @@ async def chat_endpoint(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/fill-merge-fields")
+async def fill_merge_fields_endpoint(
+    request: FillMergeFieldsRequest,
+    current_user: dict = Depends(get_current_active_user),
+):
+    try:
+        values = await fill_merge_fields(
+            intent=request.intent,
+            campaign_name=request.campaign_name,
+            subject=request.subject,
+            merge_fields=request.merge_fields,
+        )
+        return {"values": values}
+    except ValueError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.get("/conversations", response_model=PaginatedResponse[ConversationMeta])

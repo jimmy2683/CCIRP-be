@@ -9,6 +9,7 @@ from src.pagination import PaginatedResponse
 from src.communication.service import (
     normalize_campaign_channels,
     prepare_campaign_priority_dispatch,
+    retry_campaign,
 )
 from src.groups.service import resolve_static_group_emails
 from src.auth.dependencies import get_current_active_user
@@ -378,3 +379,41 @@ async def get_campaign_analytics_endpoint(campaign_id: str, current_user: dict =
         ],
         "recipients": recipient_activity
     }
+
+
+@router.post("/{campaign_id}/retry")
+async def retry_campaign_endpoint(
+    campaign_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_active_user),
+):
+    db = get_database()
+    try:
+        oid = ObjectId(campaign_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid campaign ID")
+
+    campaign = await db["campaigns"].find_one({"_id": oid, "created_by": current_user["id"]})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    retryable = {"failed", "partially_sent"}
+    if campaign.get("status") not in retryable:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Campaign cannot be retried from status '{campaign.get('status')}'. Only failed or partially_sent campaigns can be retried.",
+        )
+
+    queued = await retry_campaign(campaign_id)
+
+    dispatched_via_celery = False
+    try:
+        from src.utils.tasks import dispatch_campaign_task
+        dispatch_campaign_task.delay(campaign_id)
+        dispatched_via_celery = True
+    except Exception:
+        pass
+    if not dispatched_via_celery:
+        background_tasks.add_task(prepare_campaign_priority_dispatch, campaign_id, True)
+
+    return {"queued": queued, "campaign_id": campaign_id}

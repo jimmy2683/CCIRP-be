@@ -69,15 +69,22 @@ async def agent_stream(
         if not conv_doc:
             yield _sse("error", message="Conversation not found")
             return
-        contents = list(conv_doc["messages"])
+        history = list(conv_doc["messages"])
         title = conv_doc["title"]
         is_new = False
     else:
-        contents = []
+        history = []
         title = message[:70].strip()
         is_new = True
 
-    contents.append({"role": "user", "parts": [{"text": message}]})
+    user_turn = {"role": "user", "parts": [{"text": message}]}
+
+    # api_contents: passed to generate_content_async; may contain proto Content objects
+    # so that thought_signature is preserved across tool-call iterations (required by
+    # thinking models — stripping it causes a 400 error on the next turn).
+    # db_contents: plain dicts only, safe for MongoDB storage.
+    api_contents: list = [*history, user_turn]
+    db_contents: list[dict] = [*history, user_turn]
 
     try:
         model = _get_model()
@@ -96,7 +103,7 @@ async def agent_stream(
         try:
             # Non-streaming: avoids the Gemini SDK hang where the async chunk
             # iterator never signals EOF when the response contains a function call.
-            response = await model.generate_content_async(contents)
+            response = await model.generate_content_async(api_contents)
         except Exception as exc:
             yield _sse("error", message=str(exc))
             return
@@ -125,16 +132,19 @@ async def agent_stream(
                 function_calls.append({"name": fc.name, "args": args})
                 yield _sse("tool_start", tool_name=fc.name, tool_input=args)
 
-        assistant_parts: list[dict] = []
+        db_assistant_parts: list[dict] = []
         if text_accumulated:
-            assistant_parts.append({"text": "".join(text_accumulated)})
+            db_assistant_parts.append({"text": "".join(text_accumulated)})
         for fc in function_calls:
-            assistant_parts.append({"function_call": {"name": fc["name"], "args": fc["args"]}})
+            db_assistant_parts.append({"function_call": {"name": fc["name"], "args": fc["args"]}})
 
-        if not assistant_parts:
+        if not db_assistant_parts:
             break
 
-        contents.append({"role": "model", "parts": assistant_parts})
+        # For API: use the raw proto Content so thought_signature is intact.
+        # For DB: use the reconstructed plain dict (no thought_signature needed in storage).
+        api_contents.append(candidate.content)
+        db_contents.append({"role": "model", "parts": db_assistant_parts})
 
         if not function_calls:
             break
@@ -152,20 +162,20 @@ async def agent_stream(
                 "function_response": {"name": fc["name"], "response": {"result": result}}
             })
 
-        contents.append({"role": "user", "parts": tool_response_parts})
+        tool_turn = {"role": "user", "parts": tool_response_parts}
+        api_contents.append(tool_turn)
+        db_contents.append(tool_turn)
 
-    # Gemini 2.5 Flash (thinking model) sometimes produces only internal thought tokens
-    # after a tool call with no visible text. Inject a model acknowledgment and a user
-    # nudge — this restores the alternating turn structure and reliably triggers a reply.
+    # Thinking models sometimes produce only internal thought tokens after tool calls
+    # with no visible text. One nudge call recovers the response.
+    # Only fires when the loop exhausted iterations without ever yielding text.
     if had_tool_calls and not any_text_yielded:
         try:
-            # contents ends with: [..., model:fc, user:fr]
-            # Append a model stub + user prompt to keep proper turn alternation
-            nudge_contents = contents + [
+            nudge_api = api_contents + [
                 {"role": "model", "parts": [{"text": "I have retrieved the requested data."}]},
                 {"role": "user", "parts": [{"text": "Please give a clear, direct answer based on that data."}]},
             ]
-            resp = await model.generate_content_async(nudge_contents)
+            resp = await model.generate_content_async(nudge_api)
             if resp.candidates:
                 c = resp.candidates[0]
                 parts = c.content.parts if (c.content and c.content.parts) else []
@@ -175,18 +185,18 @@ async def agent_stream(
                     if getattr(part, "text", None):
                         yield _sse("text_delta", text=part.text)
                         any_text_yielded = True
-        except Exception as exc:
+        except Exception:
             pass
 
-    if len(contents) > MAX_CONVERSATION_MESSAGES:
-        contents = contents[-MAX_CONVERSATION_MESSAGES:]
+    if len(db_contents) > MAX_CONVERSATION_MESSAGES:
+        db_contents = db_contents[-MAX_CONVERSATION_MESSAGES:]
 
     now = datetime.now(timezone.utc)
     if is_new:
         ins = await db["ai_conversations"].insert_one({
             "user_id": user_id,
             "title": title,
-            "messages": contents,
+            "messages": db_contents,
             "created_at": now,
             "updated_at": now,
         })
@@ -194,7 +204,7 @@ async def agent_stream(
     else:
         await db["ai_conversations"].update_one(
             {"_id": ObjectId(conversation_id)},
-            {"$set": {"messages": contents, "updated_at": now}},
+            {"$set": {"messages": db_contents, "updated_at": now}},
         )
         saved_id = conversation_id
 

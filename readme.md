@@ -2,267 +2,230 @@
 
 ## Overview
 
-The **CCIRP Backend** powers the **Central Communication and Intelligent Reminder Platform (CCIRP)**.
-It is built using **FastAPI** and provides REST APIs for authentication, user management, communication workflows, reminders, notifications, and AI-powered scheduling.
-
-The backend is responsible for:
-
-* Handling authentication and authorization
-* Managing users, campaigns, and reminders
-* Delivering notifications
-* Running AI-based reminder suggestions
-* Providing APIs consumed by the Next.js frontend
+The **CCIRP Backend** powers the **Central Communication and Intelligent Reminder Platform** — a multi-channel communication system for email, SMS, and WhatsApp campaigns. Built on FastAPI with an async-first architecture.
 
 ---
 
 ## Tech Stack
 
-* **FastAPI** – High-performance Python API framework
-* **Python 3.10** – Runtime version
-* **MongoDB** – Primary NoSQL database for flexible data storage
-* **Motor** – High-performance asynchronous MongoDB driver
-* **ObjectId Serialization**: Integrated robust type checking and string casting for BSON ObjectIDs.
-* **Pydantic 2** – Modern data validation and serialization
-* **FastAPI-Mail** – Asynchronous email dispatch engine
-* **JWT** – Secure authentication tokens
-* **Uvicorn** – ASGI server
-* **Ruff** – Blazing fast linting and code quality
+| Component | Technology |
+|---|---|
+| API Framework | FastAPI (async) |
+| Database | MongoDB via Motor (`tz_aware=True`) |
+| Auth | JWT (access 24 h + refresh 7 d), bcrypt |
+| Email | fastapi-mail (SMTP) + Resend API |
+| SMS / WhatsApp | Twilio |
+| Background Tasks | Celery + Redis (graceful fallback to FastAPI BackgroundTasks) |
+| Event Bus | Kafka via confluent-kafka (optional, gated by `KAFKA_ENABLED`) |
+| AI | Google Gemini via `google-generativeai` SDK |
+| Task Queue | Internal async priority queue in MongoDB |
+| Testing | pytest + pytest-asyncio (strict mode) |
 
 ---
 
 ## Project Structure
 
 ```
-backend
-│
-├── src
-│   ├── ai                # AI reminder and suggestion logic
-│   ├── auth              # Authentication and authorization
-│   ├── communication     # Communication and messaging services
-│   ├── notifications     # Notification delivery logic
-│   ├── reminders         # Reminder scheduling and management
-│   ├── users             # User management
-│   ├── core              # Core configurations and settings
-│   ├── db                # Database models and session management
-│   ├── templates         # Server-side template rendering
-│   └── utils             # Utility functions
-│
-├── requirements
-│   ├── base.txt          # Base dependencies
-│   ├── dev.txt           # Development dependencies
-│   └── prod.txt          # Production dependencies
-│
-└── README.md
+src/
+├── main.py                  # App entry, lifespan, CORS
+├── config.py                # All env-var settings (pydantic-settings)
+├── database.py              # Motor client (tz_aware=True)
+├── kafka_utils.py / events.py  # Optional Kafka event publishing
+├── ai/                      # Gemini agent, merge-field fill, spam detector
+├── auth/                    # JWT, bcrypt, OAuth2
+├── users/                   # User CRUD
+├── templates/               # Template CRUD, preview, test-send, versioning
+├── communication/           # Campaign engine, dispatch, tracking, email/SMS/WA
+├── recipients/              # Recipient CRUD, engagement stats
+├── groups/                  # Static groups, dynamic groups, AI segmentation
+├── analytics/               # Overview, campaign detail, links, exports
+├── reminders/               # Reminder scheduling
+└── utils/                   # Celery tasks
 ```
-
----
-
-## Features
-
-### Authentication
-
-* Secure login system
-* **OAuth2 Password Bearer Flow**: Standardized secure authentication routing.
-* JWT-based authentication
-* **Extended Session Security**: Access tokens valid for **24 hours**.
-* Role-based access control
-
-### User Management
-
-* User registration
-* Profile management
-* Access control
-
-### Reminder System
-
-* Create and schedule reminders
-* Automated reminder execution
-* Time-based notifications
-
-### Notifications
-* **Real-time Dispatch**: Integrated `EmailService` using `FastMail` for asynchronous delivery.
-* **SMTP Integration**: Pre-configured support for modern mail providers (Gmail, SendGrid, etc.).
-* **Merge Field Resolution**: Dynamic injection of recipient data and system variables (e.g., `{{timestamp}}`) into rendered HTML.
-* Alert delivery system
-* Multi-channel communication support
-
-### Template Engine
-* **Visual Builder Persistence**: Integrated a `design_json` field capable of natively persisting complex, nested Block/Component hierarchies.
-* **Real Email Dispatch & Test Engine**: Logic resolving specific users, hydrating `{{name}}` and `{{email}}` dynamically.
-* **Dynamic Rendering**: Server-side template rendering with sample data support.
-* **CRUD Operations**: Secure endpoints for managing design blocks and layouts.
-* **Version Control**: Automatic version tracking for all template changes.
-
-### Campaign Management (NEW)
-* **Workflow Persistence**: Endpoint architecture mapped to save draft and operational communication broadcasts.
-* **Relational Integrity**: Campaigns dynamically link User identities and target Assets.
-* **List Aggregation**: Designed to securely host `recipients` criteria and `scheduled_at` dispatch timing.
-
-### AI Integration
-* **Multi-Channel Spam Detection**: AI-driven content moderation for emails, SMS, and WhatsApp to prevent IP blacklisting.
-* AI-powered reminder suggestions
-* Task prioritization logic
-* Future predictive scheduling support
 
 ---
 
 ## Installation
 
-### 1. Navigate to Backend Directory
-
 ```bash
-cd backend
-```
-
----
-
-### 2. Create Virtual Environment
-
-```bash
+cd CCIRP-be
 python3 -m venv .venv
-```
-
-Activate it:
-
-**Linux / macOS**
-
-```bash
-source .venv/bin/activate
-```
-
-**Windows**
-
-```bash
-.venv\Scripts\activate
-```
-
----
-
-### 3. Install Dependencies
-
-Install base dependencies:
-
-```bash
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements/base.txt
 ```
 
-For development environment:
-
+For development:
 ```bash
 pip install -r requirements/dev.txt
 ```
 
 ---
 
-## Running the Backend Server
-
-Start the FastAPI server:
+## Running
 
 ```bash
 uvicorn src.main:app --reload
 ```
 
-The backend will run at:
+API available at `http://127.0.0.1:8000`. Docs at `/docs` (Swagger) and `/redoc`.
 
-```
-http://127.0.0.1:8000
-```
-
----
-
-## API Documentation
-
-FastAPI automatically generates API documentation.
-
-Swagger UI:
-
-```
-http://127.0.0.1:8000/docs
-```
-
-ReDoc:
-
-```
-http://127.0.0.1:8000/redoc
+Optional workers (only if Redis and Celery are available):
+```bash
+celery -A src.celery_app worker --loglevel=info
+celery -A src.celery_app beat --loglevel=info
 ```
 
 ---
 
 ## Environment Variables
 
-Create a `.env` file in the backend directory.
+Create `.env` in `CCIRP-be/`:
 
-Example:
+```env
+# MongoDB
+MONGODB_URL=mongodb+srv://...
+DATABASE_NAME=ccirp_db
 
-```
-DATABASE_URL=mongodb://localhost:27017/ccirp
-SECRET_KEY=your-secret-key
+# Auth
+SECRET_KEY=change-in-production
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=1440
+REFRESH_TOKEN_EXPIRE_DAYS=7
 
-# SMTP Settings
+# Email — MAIL_FROM must match SMTP_USER for Gmail
+EMAIL_PROVIDER=smtp
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=your_email@gmail.com
-SMTP_PASSWORD=your_app_password
-MAIL_FROM=your_email@gmail.com
+SMTP_USER=you@gmail.com
+SMTP_PASSWORD=your-app-password
+MAIL_FROM=you@gmail.com
 SMTP_TLS=True
 SMTP_SSL=False
+
+# Resend (alternative email provider)
+RESEND_API_KEY=re_...
+RESEND_API_BASE_URL=https://api.resend.com
+RESEND_REPLY_TO=you@gmail.com
+
+# SMS / WhatsApp
+TWILIO_ACCOUNT_SID=AC...
+TWILIO_AUTH_TOKEN=...
+TWILIO_SMS_FROM=+1...
+TWILIO_WHATSAPP_FROM=whatsapp:+1...
+TWILIO_API_BASE_URL=https://api.twilio.com
+
+# Tracking
+FRONTEND_URL=http://localhost:3000
+TRACKING_BASE_URL=http://localhost:8000
+TRACKING_SIGNING_KEY=change-in-production
+TRACKING_TOKEN_TTL_SECONDS=2592000
+
+# AI
+GOOGLE_API_KEY=AIza...
+
+# Celery / Redis
+CELERY_BROKER_URL=redis://localhost:6379/1
+CELERY_RESULT_BACKEND=redis://localhost:6379/1
+REDIS_URL=redis://localhost:6379/0
+
+# Kafka — set False if Kafka is not running (prevents log floods)
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_ENABLED=False
+
+# Scheduler
+CAMPAIGN_SCHEDULER_INTERVAL_SECONDS=15
 ```
 
 ---
 
-## API Modules
+## Key API Endpoints
 
-| Module            | Description                       |
-| ----------------- | --------------------------------- |
-| **auth**          | Authentication and authorization  |
-| **users**         | User account management           |
-| **reminders**     | Reminder scheduling and execution |
-| **notifications** | Notification delivery             |
-| **communication** | Messaging and campaigns           |
-| **ai**            | Intelligent reminder logic        |
+### Auth
+| Method | Path | Description |
+|---|---|---|
+| POST | `/auth/register` | Register user |
+| POST | `/auth/login` | Login, receive tokens |
+| POST | `/auth/refresh` | Refresh access token |
+| GET | `/auth/me` | Current user |
+
+### Templates
+| Method | Path | Description |
+|---|---|---|
+| GET | `/templates/` | List all |
+| POST | `/templates/` | Create |
+| PUT | `/templates/{id}` | Update (archives version) |
+| DELETE | `/templates/{id}` | Delete |
+| POST | `/templates/preview` | Render with sample data |
+| POST | `/templates/{id}/test-send` | Send real email |
+
+### Campaigns
+| Method | Path | Description |
+|---|---|---|
+| GET | `/campaigns/` | List campaigns |
+| POST | `/campaigns/` | Create + enqueue |
+| GET | `/campaigns/{id}` | Get campaign |
+| GET | `/campaigns/{id}/analytics` | Full analytics |
+| POST | `/campaigns/{id}/retry` | Retry failed/partially_sent |
+| POST | `/campaigns/check-spam` | Spam pre-check |
+
+### Analytics
+| Method | Path | Description |
+|---|---|---|
+| GET | `/analytics/overview` | Platform-wide stats + trend |
+| GET | `/analytics/overview/export` | CSV of all campaigns |
+| GET | `/analytics/campaigns/{id}` | Campaign detail |
+| GET | `/analytics/campaigns/{id}/links` | Link click stats |
+| GET | `/analytics/campaigns/{id}/export` | Campaign CSV |
+| GET | `/analytics/campaigns/{id}/links/export` | Links CSV |
+| GET | `/analytics/recipients/{id}` | Recipient history |
+
+### Tracking (public, no auth)
+| Method | Path | Description |
+|---|---|---|
+| GET | `/track/open/{token}.png` | Open pixel (email only) |
+| GET | `/track/click/{token}` | Click redirect |
+| GET | `/track/unsubscribe/{token}` | Global opt-out |
+
+### AI
+| Method | Path | Description |
+|---|---|---|
+| POST | `/ai/chat` | Streaming SSE agent |
+| POST | `/ai/fill-merge-fields` | AI merge field suggestions |
+| GET | `/ai/conversations` | List conversations |
+| GET | `/ai/conversations/{id}` | Get conversation |
+| DELETE | `/ai/conversations/{id}` | Delete conversation |
+
+### Recipients / Groups
+| Method | Path | Description |
+|---|---|---|
+| GET/POST | `/recipients/` | List / create |
+| GET/PUT/DELETE | `/recipients/{id}` | CRUD |
+| GET/POST | `/groups/` | Static groups |
+| GET | `/groups/dynamic-preferences` | Saved dynamic configs |
+| POST | `/groups/resolve-dynamic` | Resolve live audience |
+| POST | `/groups/segmentation` | AI semantic segmentation |
 
 ---
 
-## Future Improvements
+## Important Implementation Notes
 
-* AI-based scheduling optimization
-* Push notification support
-* Docker containerization
-* Microservices architecture
-* Dynamic asset storage integration
-
----
-
-## Related Project
-
-This backend works with the **CCIRP Frontend** built using:
-
-* Next.js
-* React
-* TypeScript
-* Tailwind CSS
-
-The frontend communicates with the backend through REST APIs.
+- **Motor `tz_aware=True`**: All datetimes from MongoDB are UTC-aware. Without this, naive datetimes serialize without a timezone offset and the browser misinterprets them as local time.
+- **SMTP `MAIL_FROM`**: Must match the authenticated Gmail account. Setting it to any other address (e.g. `onboarding@resend.dev`) causes Gmail to reject the send. Changes require a backend restart since `fast_mail` is built at import time.
+- **Kafka `KAFKA_ENABLED=False`**: Set this when Kafka is not running. Without it, librdkafka's background thread retries the broker connection every 30 s and floods stderr.
+- **Gemini thought_signature**: When using thinking models (2.5 Flash, 3.x), function call parts carry a `thought_signature` that must be preserved across tool-call iterations. The agent uses `api_contents` (raw proto objects) for API calls and `db_contents` (plain dicts) for MongoDB storage to avoid stripping this field.
+- **Campaign retry**: Only resets `failed`/`cancelled` queue entries — already-completed sends are not re-sent. The retry endpoint returns 409 for any status other than `failed` or `partially_sent`.
 
 ---
 
 ## Authors
 
-Group 6 – Software Engineering Project
+Group 6 — Software Engineering Project, IITH
 
-Contributors:
+- CS23BTECH11007 Arnav Maiti
+- CS23BTECH11009 Bhumin Hirpara
+- CS23BTECH11023 Karan Gupta
+- CS23BTECH11048 Pranjal Prajapati
+- CS23BTECH11052 Roshan Y Singh
+- CS23BTECH11060 Sujal Meshram
 
-* CS23BTECH11007 Arnav Maiti
-* CS23BTECH11009 Bhumin Hirpara
-* CS23BTECH11023 Karan Gupta
-* CS23BTECH11048 Pranjal Prajapati
-* CS23BTECH11052 Roshan Y Singh
-* CS23BTECH11060 Sujal Meshram
-
----
-
-## License
-
-This project is developed for **academic and research purposes**.
+*Academic and research use only.*
